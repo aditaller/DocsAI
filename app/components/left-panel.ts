@@ -120,6 +120,7 @@ export class LeftPanelComponent {
 
   objectTypeChange = output<string>();
   objectIdChange = output<string>();
+  customerPicked = output<CustomerHit>();
   toggle = output<string>();
   filesPicked = output<File[]>();
   attach = output<void>();
@@ -150,6 +151,7 @@ export class LeftPanelComponent {
     if (picked) {
       clearTimeout(this.timer);
       this.objectIdChange.emit(String(picked.id));
+      this.customerPicked.emit(picked);
       return;
     }
 

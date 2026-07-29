@@ -12,6 +12,7 @@ export interface Doc {
   category: string;
   selected: boolean;
   file?: File; // present for docs loaded from server; opened by native type handling
+  path?: string; // gnr.archive file path/URL; opened directly when present
 }
 
 export interface Job {

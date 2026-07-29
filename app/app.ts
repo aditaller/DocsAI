@@ -14,11 +14,14 @@ import {
 } from './data/data';
 import { DI_CONFIG, findAi, findOcr } from './config/di.config';
 import { AnalysisResponse, Doc, Job, Toast } from './models/models';
+import { AuthService } from './services/auth.service';
+import { archiveToDoc, CustomerHit, CustomerService } from './services/customer.service';
 import { OcrService } from './services/ocr.service';
 
 import { ChatDrawerComponent, RawOcrDrawerComponent, ToastsComponent } from './components/drawers';
 import { DocPreviewModalComponent } from './components/doc-preview-modal';
 import { LeftPanelComponent } from './components/left-panel';
+import { LoginComponent } from './components/login';
 import { LlmPanelComponent, ResponseCardComponent } from './components/llm-panel';
 import { OcrBoardComponent } from './components/ocr-board';
 import { TopBarComponent } from './components/top-bar';
@@ -28,6 +31,7 @@ import { TopBarComponent } from './components/top-bar';
   imports: [
     TopBarComponent,
     LeftPanelComponent,
+    LoginComponent,
     OcrBoardComponent,
     LlmPanelComponent,
     ResponseCardComponent,
@@ -37,6 +41,9 @@ import { TopBarComponent } from './components/top-bar';
     ToastsComponent,
   ],
   template: `
+    @if (!auth.authed()) {
+      <di-login />
+    } @else {
     <div class="app-shell">
       <di-top-bar [contextLabel]="contextLabel()" />
 
@@ -49,10 +56,11 @@ import { TopBarComponent } from './components/top-bar';
           [selectedCount]="selectedDocs().length"
           (objectTypeChange)="objectType.set($event)"
           (objectIdChange)="objectId.set($event)"
+          (customerPicked)="onCustomerPicked($event)"
           (toggle)="onToggleDoc($event)"
           (filesPicked)="onFilesPicked($event)"
           (attach)="onAttach()"
-          (preview)="previewDoc.set($event)"
+          (preview)="onOpenDoc($event)"
           (open)="onOpenDoc($event)"
           (remove)="onRemoveDoc($event)"
         />
@@ -99,6 +107,7 @@ import { TopBarComponent } from './components/top-bar';
       <di-chat-drawer [open]="chatOpen()" [docNames]="chatDocs()" (close)="chatOpen.set(false)" />
       <di-toasts [toasts]="toasts()" />
     </div>
+    }
   `,
 })
 export class App implements OnDestroy {
@@ -144,7 +153,11 @@ export class App implements OnDestroy {
 
   private pipeline: ReturnType<typeof setInterval>;
 
-  constructor(private ocrService: OcrService) {
+  constructor(
+    private ocrService: OcrService,
+    private customerService: CustomerService,
+    public auth: AuthService,
+  ) {
     // Fixed appearance defaults (the standalone build's Tweaks panel is host-only tooling).
     const root = document.documentElement;
     root.style.setProperty('--accent', '#4C9AFF');
@@ -217,6 +230,20 @@ export class App implements OnDestroy {
     this.docs.update((ds) => [...ds, ...added]);
   }
 
+  async onCustomerPicked(c: CustomerHit) {
+    try {
+      const rows = await this.customerService.documents(c.id);
+      if (rows.length) console.log('gnr.archive row sample:', rows[0]);
+      this.docs.set(rows.map(archiveToDoc));
+      this.jobs.set([]); // seed/previous OCR jobs belong to the old context
+      this.llmSelected.set([]); // and so does the LLM selection pointing at them
+      this.addToast(`${rows.length} document${rows.length === 1 ? '' : 's'} for ${c.name}`, rows.length ? 'success' : 'info');
+    } catch (err) {
+      console.error('Loading customer documents failed:', err);
+      this.addToast('Could not load customer documents', 'error');
+    }
+  }
+
   onRemoveDoc(id: string) {
     const d = this.docs().find((x) => x.id === id);
     if (!d?.file) return; // only server-loaded uploads are removable
@@ -225,16 +252,34 @@ export class App implements OnDestroy {
   }
 
   onOpenDoc(d: Doc) {
+    // Archive docs carry a server-side path (c:/temp/x.png) the browser can't read.
+    // Open it exactly like the main TALDAR app's table-grid openfile(): xlsx via the
+    // ms-excel: protocol, everything else through the getarchivedata route (the jwt
+    // cookie rides along, same-origin, so the backend authorizes it).
+    if (d.path) {
+      if (d.path.toLowerCase().endsWith('.xlsx')) {
+        window.open('ms-excel:ofe|u|' + d.path, '_blank');
+      } else {
+        const url = new URL(DI_CONFIG.taldar.archiveFileEndpoint, location.origin);
+        url.searchParams.set('path', d.path);
+        window.open(url.toString(), '_blank');
+      }
+      return;
+    }
     // Files loaded from server: let the browser open by MIME type (PDF/image inline, Word downloads).
     // Seed docs have no File, so fall back to the canned preview modal.
     if (d.file) {
-      const url = URL.createObjectURL(d.file);
-      window.open(url, '_blank');
-      // ponytail: fixed 60s before revoke; enough for the new tab to load any doc type.
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      this.openBlob(d.file);
     } else {
       this.previewDoc.set(d);
     }
+  }
+
+  private openBlob(blob: Blob) {
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    // ponytail: fixed 60s before revoke; enough for the new tab to load any doc type.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   onAttach() {
@@ -260,10 +305,11 @@ export class App implements OnDestroy {
     this.jobs.update((js) => [...js, ...newJobs]);
     this.addToast(`${fresh.length} document${fresh.length > 1 ? 's' : ''} sent to ${this.ocrEngine().short}`, 'success');
 
-    // For uploaded files, call the real OCR API and update the job on completion.
-    for (const doc of fresh.filter((d) => d.file)) {
+    // Run OCR on every fresh doc: uploads carry their File directly; archive docs
+    // stream their bytes from the getarchivedata route first.
+    for (const doc of fresh) {
       const job = newJobs.find((j) => j.docId === doc.id)!;
-      this.ocrService.recognize(doc.file!, this.ocrEngineId()).then((result) => {
+      this.resolveFile(doc).then((file) => this.ocrService.recognize(file, this.ocrEngineId())).then((result) => {
         this.jobs.update((js) =>
           js.map((j) =>
             j.jobId === job.jobId
@@ -281,6 +327,19 @@ export class App implements OnDestroy {
     }
   }
 
+  // Uploads already hold a File; archive docs stream from getarchivedata (jwt cookie
+  // rides along, same-origin) and get wrapped into a File for the OCR call.
+  private async resolveFile(doc: Doc): Promise<File> {
+    if (doc.file) return doc.file;
+    if (!doc.path) throw new Error(`${doc.name} has no file or path to OCR`);
+    const url = new URL(DI_CONFIG.taldar.archiveFileEndpoint, location.origin);
+    url.searchParams.set('path', doc.path);
+    const res = await fetch(url.toString(), { credentials: 'include' });
+    if (!res.ok) throw new Error(`Fetching ${doc.name} failed (${res.status} ${res.statusText})`);
+    const blob = await res.blob();
+    return new File([blob], doc.name, { type: blob.type });
+  }
+
   toggleLlm(jobId: string) {
     this.llmSelected.update((s) => (s.includes(jobId) ? s.filter((x) => x !== jobId) : [...s, jobId]));
   }
@@ -296,37 +355,53 @@ export class App implements OnDestroy {
     if (t && t.text) this.prompt.set(t.text);
   }
 
-  onAnalyze() {
+  async onAnalyze() {
     const sel = this.jobs().filter((j) => this.llmSelected().includes(j.jobId) && j.status === 'completed');
-    if (!sel.length || !this.prompt().trim()) return;
+    if (!sel.length) {
+      this.addToast('Select an OCR-completed document to analyze', 'info');
+      return;
+    }
+    if (!this.prompt().trim()) return;
     this.analyzing.set(true);
     this.response.set(null);
-    setTimeout(() => {
-      this.response.set(this.buildResponse(sel));
-      this.analyzing.set(false);
-      this.addToast('Analysis complete', 'success');
-    }, 2100);
-  }
 
-  private buildResponse(selJobs: Job[]): AnalysisResponse {
-    const names = selJobs.map((j) => j.name);
-    const hasAdjuster = names.some((n) => /Adjuster/i.test(n));
-    const base = clone(SEED_RESPONSE);
-    base.id = uid();
-    base.docNames = names.length ? names : ['FNOL_Report_08817.pdf'];
-    base.timestamp = this.fmtNow();
-    base.model = this.modelLabel();
-    base.saved = false;
-    if (hasAdjuster) {
-      base.summary =
-        'Cross-document analysis of the <span class="hl">FNOL</span> and <span class="hl">adjuster statement</span> confirms a single-vehicle collision involving policyholder <span class="hl">Daniel R. Okonkwo</span> (2022 Honda CR-V). Loss date <span class="hl">May 28, 2026</span>, reported <span class="hl">5 days later</span>. The adjuster revised the repair estimate upward to <span class="hl">$16,800</span>, exceeding the original FNOL figure of $14,250.';
-      base.flags = [
-        { sev: 'warn', title: 'Late reporting', body: 'Loss reported 5 days after the incident — exceeds the 72-hour policy notification window.' },
-        { sev: 'danger', title: 'Amount discrepancy', body: 'FNOL estimates $14,250 in damage; the adjuster statement records $16,800 — a $2,550 variance requiring reconciliation before settlement.' },
-        { sev: 'info', title: 'Parties consistent', body: 'Policyholder name and policy number (POL-2024-44910) match across both documents.' },
-      ];
+    // OCR text of the selected docs (strip the seed markup); prompt is the instruction.
+    const userMessage = sel
+      .map((j) => `# ${j.name}\n${(j.raw?.lines ?? []).map((l) => (Array.isArray(l) ? l.join(': ') : l)).join('\n').replace(/<[^>]+>/g, '')}`)
+      .join('\n\n');
+
+    try {
+      const res = await fetch(DI_CONFIG.ai.chatEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userMessage, systemMessage: this.prompt(), enableWebSearch: false }),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const text = await res.text();
+      // ponytail: endpoint may reply with bare text or a JSON envelope; accept both.
+      let reply = text;
+      try {
+        const j = JSON.parse(text);
+        reply = j.reply ?? j.content ?? j.message ?? j.response ?? text;
+      } catch { /* plain text */ }
+
+      const base = clone(SEED_RESPONSE);
+      base.id = uid();
+      base.docNames = sel.map((j) => j.name);
+      base.timestamp = this.fmtNow();
+      base.model = this.modelLabel();
+      base.saved = false;
+      base.summary = String(reply).replace(/\n/g, '<br>');
+      base.fields = [];
+      base.flags = [];
+      this.response.set(base);
+      this.addToast('Analysis complete', 'success');
+    } catch (err) {
+      console.error('AI analysis failed:', err);
+      this.addToast('AI analysis failed', 'error');
+    } finally {
+      this.analyzing.set(false);
     }
-    return base;
   }
 
   private fmtNow(): string {

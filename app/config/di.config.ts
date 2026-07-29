@@ -28,8 +28,21 @@ export const DI_CONFIG = {
   },
   taldar: {
     // Generic metadata typeahead: ?tablename=&param=&getcol= → [{ id, name }]
-    autocompleteEndpoint: 'https://localhost:44388/api/Metadata/autocomplete',
+    // Same-origin paths on purpose: proxy.conf.json forwards /api/* to
+    // https://localhost:44388 so the `jwt` cookie stays first-party. Going direct
+    // to :44388 is cross-site under schemeful same-site and the cookie is dropped.
+    // Production needs the same /api/* rule on whatever serves the built app.
+    loginEndpoint: '/api/auth/Login',
+    autocompleteEndpoint: '/api/Metadata/autocomplete',
     customerTable: 'bp.customer',
+    // Paged entity reader: ?entity=&rows=&page=&parentname=&parentid=&whereparm=&userid=
+    entityEndpoint: '/api/Metadata/getentitybyname',
+    // Streams an archived file given its server-side fullpath: ?path=c:/temp/x.png
+    // Same route the main TALDAR app uses (table-grid openfile()); jwt cookie authorizes it.
+    archiveFileEndpoint: '/api/transferdata/getarchivedata',
+    archiveEntity: 'gnr.archive',
+    archiveRows: 20,
+    userId: 10,
   },
   ai: {
     models: [
@@ -38,6 +51,7 @@ export const DI_CONFIG = {
       { id: 'gpt', label: 'GPT-4o', version: 'gpt-4o' },
     ] as AiModel[],
     defaultId: 'taldar',
+    chatEndpoint: 'https://localhost:7185/api/gpt5mini/chat', // { userMessage, systemMessage, enableWebSearch } → chat reply
   },
 };
 

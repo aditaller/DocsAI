@@ -142,7 +142,7 @@ export class LlmPanelComponent {
           </div>
 
           <div class="resp-body">
-            <p class="summary" [innerHTML]="r.summary"></p>
+            <p class="summary" dir="auto" [innerHTML]="r.summary"></p>
 
             <div class="resp-section-title">Extracted Fields</div>
             <div class="kv-grid">
