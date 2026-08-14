@@ -1,0 +1,12 @@
+{
+  "version": "taldar-archive-v1",
+  "schema": "gnr",
+  "relation": "v_archive",
+  "idColumn": "archiveid",
+  "claimIdColumn": "objectid",
+  "fileNameColumn": "filename",
+  "mimeTypeColumn": null,
+  "contentColumn": null,
+  "fullPathColumn": "fullpath",
+  "modifiedAtColumn": "modifieddate"
+}

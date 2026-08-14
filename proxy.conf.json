@@ -1,0 +1,7 @@
+{
+  "/api/auth": { "target": "https://localhost:44388", "secure": false, "changeOrigin": false },
+  "/api/Metadata": { "target": "https://localhost:44388", "secure": false, "changeOrigin": false },
+  "/api/transferdata": { "target": "https://localhost:44388", "secure": false, "changeOrigin": false },
+  "/api/upload": { "target": "https://localhost:44388", "secure": false, "changeOrigin": false },
+  "/api/local": { "target": "http://127.0.0.1:11500", "secure": false, "changeOrigin": false }
+}

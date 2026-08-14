@@ -1,0 +1,1265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Document Intelligence — Intake &amp; Analysis (redesign mock)</title>
+
+<!--
+  Standalone visual mock. Nothing here is wired up — no JS, no build step.
+  Class names deliberately mirror the live Angular component templates
+  (src/app/components/*.ts) so this ports back as a styles.scss replacement.
+  Fonts load from Google Fonts; offline they fall back to system serif/sans/mono.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..700&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<style>
+/* ===========================================================
+   TALDAR Document Intelligence — "case file"
+   Editorial paper. Actions are ink; only states carry colour.
+   =========================================================== */
+
+:root {
+  /* surfaces */
+  --canvas:       #EFEAE1;   /* desk — behind everything, and the sidebar */
+  --canvas-2:     #E7E1D6;   /* sunken: inputs, segmented track */
+  --doc:          #FDFCFA;   /* the document surface (right column) */
+
+  /* ink */
+  --ink:          #141C2B;
+  --ink-2:        #44506A;
+  --ink-3:        #6E7A91;
+  --ink-4:        #97A1B2;
+
+  /* rules */
+  --rule:         #DCD4C6;   /* on canvas */
+  --rule-doc:     #E9E4DA;   /* on document */
+  --rule-strong:  #C2B9A8;
+
+  /* signals */
+  --signal:       #1F6FEB;
+  --good:         #12735A;
+  --warn:         #8F5D0C;
+  --flag:         #B0341F;
+
+  /* type */
+  --serif: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+  --sans:  'Instrument Sans', -apple-system, 'Segoe UI', sans-serif;
+  --mono:  'JetBrains Mono', ui-monospace, 'Cascadia Mono', Menlo, monospace;
+
+  --r: 3px;   /* the whole design uses one small radius, or none */
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* paper grain — barely there, but it keeps flat fills from looking digital */
+body::after {
+  content: "";
+  position: fixed; inset: 0; z-index: 999;
+  pointer-events: none;
+  opacity: 0.028;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection { background: #141C2B; color: #FDFCFA; }
+
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+
+/* shared micro-label: the one typographic device used throughout */
+.micro {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.app-shell { height: 100vh; display: flex; flex-direction: column; }
+
+/* ===================== TOP BAR ===================== */
+.topbar {
+  flex: 0 0 auto;
+  height: 56px;
+  display: flex; align-items: center; gap: 20px;
+  padding: 0 22px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.topbar .brand { display: flex; align-items: baseline; gap: 13px; }
+.topbar .wordmark {
+  font-family: var(--serif);
+  font-variation-settings: 'SOFT' 0, 'WONK' 1, 'opsz' 96;
+  font-weight: 600;
+  font-size: 19px;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+}
+.topbar .brand .divider { width: 1px; height: 15px; background: var(--rule-strong); align-self: center; }
+.topbar .screen-title {
+  font-family: var(--serif);
+  font-variation-settings: 'SOFT' 0, 'WONK' 0, 'opsz' 24;
+  font-weight: 400; font-size: 16px; letter-spacing: -0.005em;
+  color: var(--ink);
+}
+.topbar .crumbs {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12.5px; color: var(--ink-3);
+  padding-left: 20px;
+  border-left: 1px solid var(--rule);
+  align-self: stretch;
+  margin: 14px 0;
+}
+.topbar .crumbs .seg { color: var(--ink-2); font-weight: 500; }
+.topbar .crumbs .ctx { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.topbar .spacer { flex: 1; }
+.topbar .module-tag {
+  font-family: var(--mono);
+  font-size: 10px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--ink-2);
+  padding: 5px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+}
+.topbar .avatar {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 600; color: var(--ink);
+  cursor: pointer;
+}
+.topbar .avatar .initial {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--ink); color: var(--canvas);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+}
+
+/* ===================== MAIN GRID ===================== */
+.main {
+  flex: 1 1 auto; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(340px, 30%) 1fr;
+}
+
+/* ===================== LEFT PANEL ===================== */
+.left-panel {
+  min-height: 0; min-width: 0;   /* grid child: allow it to shrink below content width */
+  display: flex; flex-direction: column;
+  background: var(--canvas);
+  border-right: 1px solid var(--rule-strong);
+}
+
+.panel-head { flex: 0 0 auto; padding: 20px 20px 18px; }
+.panel-head .eyebrow {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 14px;
+}
+.panel-head .eyebrow svg { width: 12px; height: 12px; color: var(--ink-4); }
+
+.ctx-bar { display: flex; flex-direction: column; gap: 12px; }
+
+/* segmented — a ruled tab strip, not a pill switcher */
+.segmented {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.segmented button {
+  font-family: var(--sans);
+  font-size: 12.5px; font-weight: 500;
+  color: var(--ink-3);
+  background: none; border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 0 2px 9px;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.segmented button:hover { color: var(--ink); }
+.segmented button.active {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--ink);
+}
+
+.id-row { display: flex; gap: 7px; }
+.id-input-wrap { flex: 1; position: relative; display: flex; align-items: center; }
+.id-input-wrap .lead {
+  position: absolute; left: 11px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-4);
+  pointer-events: none;
+}
+.id-input {
+  width: 100%;
+  font-family: var(--mono); font-size: 12.5px;
+  color: var(--ink);
+  background: var(--doc);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  padding: 10px 12px 10px 42px;
+  outline: none;
+  transition: border-color 140ms ease;
+}
+.id-input:hover { border-color: var(--ink-4); }
+.id-input:focus { border-color: var(--ink); }
+
+.icon-btn {
+  flex: 0 0 auto; width: 38px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--doc);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.icon-btn:hover { background: var(--ink); border-color: var(--ink); color: var(--doc); }
+.icon-btn svg { width: 15px; height: 15px; }
+
+.linked-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  align-self: flex-start;
+  font-family: var(--mono);
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--good);
+}
+.linked-badge .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--good); }
+
+/* list toolbar */
+.list-toolbar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 20px;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.list-toolbar .count {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+.list-toolbar .count b { color: var(--ink); font-weight: 600; }
+
+.ghost-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--sans); font-size: 12px; font-weight: 500;
+  color: var(--ink-2);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--rule-strong);
+  padding: 2px 0;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.ghost-btn:hover { color: var(--ink); border-bottom-color: var(--ink); }
+.ghost-btn svg { width: 13px; height: 13px; }
+
+/* document list — ruled rows, no cards */
+.doc-list {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.doc-card {
+  position: relative;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 20px 11px 17px;
+  border-bottom: 1px solid var(--rule);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.doc-card:hover { background: rgba(255,255,255,0.55); }
+.doc-card.selected {
+  background: var(--doc);
+  border-left-color: var(--ink);
+}
+
+.checkbox {
+  flex: 0 0 auto;
+  width: 16px; height: 16px;
+  border: 1.5px solid var(--rule-strong);
+  border-radius: 2px;
+  background: var(--doc);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--doc);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.doc-card:hover .checkbox { border-color: var(--ink-3); }
+.doc-card.selected .checkbox { background: var(--ink); border-color: var(--ink); }
+.checkbox svg { width: 11px; height: 11px; opacity: 0; }
+.doc-card.selected .checkbox svg { opacity: 1; }
+
+/* file type as a set mono tag, not a coloured chip */
+.file-icon {
+  flex: 0 0 auto;
+  min-width: 30px;
+  font-family: var(--mono);
+  font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 3px 5px;
+  border: 1px solid;
+  border-radius: 2px;
+}
+.file-icon.pdf   { color: var(--flag);   border-color: rgba(176,52,31,0.32); }
+.file-icon.image { color: var(--good);   border-color: rgba(18,115,90,0.32); }
+.file-icon.word  { color: var(--signal); border-color: rgba(31,111,235,0.32); }
+
+.doc-meta { flex: 1 1 auto; min-width: 0; }
+.doc-meta .name {
+  font-size: 13px; font-weight: 500; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+.doc-card.selected .doc-meta .name { font-weight: 600; }
+/* nowrap + clip: a long meta line must never push the row to two lines */
+.doc-meta .sub {
+  display: flex; align-items: center; gap: 9px;
+  flex-wrap: nowrap; min-width: 0; overflow: hidden;
+}
+.doc-meta .sub > * { white-space: nowrap; }
+/* when the row is tight, the category yields — the warning never truncates */
+.doc-meta .sub > .cat-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.doc-meta .sub > .date,
+.doc-meta .sub > .not-arch { flex: 0 0 auto; }
+.doc-meta .date {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.03em;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+.doc-meta .cat-tag {
+  font-family: var(--mono);
+  font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.doc-meta .cat-tag::before { content: "· "; color: var(--ink-4); }
+
+.not-arch {
+  font-family: var(--mono);
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--warn);
+}
+.not-arch::before { content: "· "; color: var(--ink-4); }
+
+.arch-btn {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 5px;
+  white-space: nowrap;
+  font-family: var(--sans); font-size: 11px; font-weight: 600;
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.arch-btn:hover { color: var(--doc); background: var(--ink); border-color: var(--ink); }
+.arch-btn svg { width: 11px; height: 11px; }
+
+.doc-open {
+  flex: 0 0 auto;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-4);
+  opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease;
+}
+.doc-card:hover .doc-open { opacity: 1; }
+.doc-open:hover { color: var(--ink); }
+.doc-open svg { width: 14px; height: 14px; }
+
+/* left footer */
+.left-footer {
+  flex: 0 0 auto;
+  padding: 14px 20px;
+  border-top: 1px solid var(--rule-strong);
+  background: var(--canvas);
+}
+
+.btn-primary {
+  width: 100%;
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  font-family: var(--sans);
+  font-size: 13px; font-weight: 600; letter-spacing: 0.01em;
+  color: var(--doc);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: var(--r);
+  padding: 12px 18px;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.btn-primary:hover { background: #22304A; }
+.btn-primary:disabled {
+  color: var(--ink-4); background: none; border-color: var(--rule-strong);
+  cursor: not-allowed;
+}
+.btn-primary svg { width: 15px; height: 15px; }
+.btn-primary .pill-count {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 500;
+  border: 1px solid rgba(253,252,250,0.35);
+  border-radius: 2px;
+  padding: 1px 5px;
+}
+
+/* ===================== RIGHT PANEL (the document) ===================== */
+.right-panel {
+  min-height: 0; min-width: 0;   /* grid child: allow it to shrink below content width */
+  overflow-y: auto;
+  background: var(--doc);
+  padding: 0 40px 64px;
+}
+
+/* Sections are not cards. They are ruled passages of one document,
+   each annotated in the margin. */
+.zone {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  column-gap: 26px;
+  padding: 30px 0 34px;
+  border-bottom: 1px solid var(--rule-doc);
+}
+.zone:last-child { border-bottom: none; }
+
+.zone-mark {
+  grid-column: 1; grid-row: 1 / -1;
+  position: sticky; top: 30px;
+  align-self: start;
+  text-align: right;
+  padding-top: 4px;
+}
+.zone-mark .n {
+  display: block;
+  font-family: var(--serif);
+  font-variation-settings: 'SOFT' 0, 'WONK' 1, 'opsz' 60;
+  font-weight: 300;
+  font-size: 30px;
+  line-height: 1;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+.zone-mark .l {
+  display: block;
+  margin-top: 7px;
+  font-family: var(--mono);
+  font-size: 9px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.zone-head {
+  grid-column: 2; min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px;
+  margin-bottom: 20px;
+}
+.zone-head .z-title {
+  font-family: var(--serif);
+  font-variation-settings: 'SOFT' 0, 'WONK' 0, 'opsz' 30;
+  font-weight: 500; font-size: 21px; letter-spacing: -0.012em;
+  color: var(--ink);
+}
+.zone-head .z-sub { font-size: 12.5px; color: var(--ink-3); }
+.zone-head .spacer { flex: 1; }
+.zone-body { grid-column: 2; min-width: 0; }
+
+/* ---- OCR status board ---- */
+/* the table is the one element with a hard minimum — let it scroll itself
+   rather than pushing the whole page sideways */
+.ocr-scroll { overflow-x: auto; }
+.ocr-table { width: 100%; min-width: 620px; border-collapse: collapse; }
+.ocr-table thead th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 9.5px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--ink-4);
+  padding: 0 12px 9px 0;
+  border-bottom: 1px solid var(--ink);
+  white-space: nowrap;
+}
+.ocr-table thead th.num { text-align: right; }
+.ocr-table tbody td {
+  padding: 13px 12px 13px 0;
+  border-bottom: 1px solid var(--rule-doc);
+  font-size: 13px; color: var(--ink-2);
+  vertical-align: middle;
+}
+.ocr-table tbody tr:last-child td { border-bottom: none; }
+.ocr-table .doc-cell { display: flex; align-items: center; gap: 10px; }
+.ocr-table .doc-cell .nm { font-size: 12.5px; font-weight: 500; color: var(--ink); }
+/* tbody-scoped: an unscoped .num also matches th.num and blows out the header */
+.ocr-table tbody .num {
+  text-align: right;
+  font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.ocr-table .ts {
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.ocr-table .muted { color: var(--ink-4); }
+.conf-strong { color: var(--good) !important; font-weight: 600; }
+
+.raw-link {
+  font-family: var(--sans);
+  font-size: 11.5px; font-weight: 500;
+  color: var(--ink-2);
+  background: none; border: none;
+  border-bottom: 1px solid var(--rule-strong);
+  padding: 1px 0; margin-right: 14px;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.raw-link:hover { color: var(--signal); border-bottom-color: var(--signal); }
+
+/* status: set as text, not as a filled blob */
+.pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
+  white-space: nowrap;
+}
+.pill .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.pill.completed  { color: var(--good); }
+.pill.processing { color: var(--signal); }
+.pill.processing .dot { animation: dotpulse 1.3s ease-in-out infinite; }
+.pill.queued     { color: var(--ink-4); }
+.pill.failed     { color: var(--flag); }
+@keyframes dotpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+.mini-prog { display: flex; align-items: center; gap: 9px; justify-content: flex-end; }
+.mini-prog .track { width: 54px; height: 2px; background: var(--rule); }
+.mini-prog .fill { height: 100%; background: var(--signal); }
+.mini-prog .pct {
+  font-family: var(--mono); font-size: 11px; color: var(--signal);
+  font-variant-numeric: tabular-nums;
+}
+
+/* engine select */
+.select-wrap { position: relative; display: inline-flex; align-items: center; }
+.select-wrap select {
+  appearance: none; -webkit-appearance: none;
+  font-family: var(--sans); font-size: 12px; font-weight: 500;
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  padding: 8px 30px 8px 11px;
+  cursor: pointer; outline: none;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.select-wrap select:hover { color: var(--ink); border-color: var(--ink-4); }
+.select-wrap select:focus { border-color: var(--ink); }
+.select-wrap .chev { position: absolute; right: 10px; pointer-events: none; color: var(--ink-4); display: flex; }
+.select-wrap .chev svg { width: 13px; height: 13px; }
+
+/* ---- LLM analysis ---- */
+.field-label {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 11px;
+}
+.field-label .hint { font-family: var(--sans); font-size: 11.5px; color: var(--ink-4); letter-spacing: 0; text-transform: none; }
+
+.llm-checklist { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+.llm-chip-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.llm-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--sans); font-size: 12px; font-weight: 500;
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  padding: 6px 11px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.llm-chip .cb {
+  width: 13px; height: 13px; border-radius: 2px;
+  border: 1.5px solid var(--rule-strong);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--doc);
+}
+.llm-chip .cb svg { width: 9px; height: 9px; opacity: 0; }
+.llm-chip:hover { border-color: var(--ink-4); color: var(--ink); }
+.llm-chip.on { color: var(--ink); border-color: var(--ink); font-weight: 600; }
+.llm-chip.on .cb { background: var(--ink); border-color: var(--ink); }
+.llm-chip.on .cb svg { opacity: 1; }
+.llm-chip.disabled { opacity: 0.45; cursor: not-allowed; }
+
+.prompt-area {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  font-family: var(--sans);
+  font-size: 13.5px; line-height: 1.6;
+  color: var(--ink);
+  background: var(--canvas);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  padding: 13px 15px;
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.prompt-area:hover { border-color: var(--ink-4); }
+.prompt-area:focus { border-color: var(--ink); background: var(--doc); }
+.prompt-area::placeholder { color: var(--ink-4); }
+
+.llm-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+.llm-controls .spacer { flex: 1; }
+.save-note { font-size: 11.5px; color: var(--ink-3); }
+.save-note b { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--ink); }
+
+.btn-analyze {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--sans); font-size: 13px; font-weight: 600;
+  color: var(--doc);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: var(--r);
+  padding: 11px 20px;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.btn-analyze:hover { background: #22304A; }
+.btn-analyze:disabled { color: var(--ink-4); background: none; border-color: var(--rule-strong); cursor: not-allowed; }
+.btn-analyze svg { width: 14px; height: 14px; }
+
+/* ---- Analysis result ---- */
+.resp-head {
+  display: flex; align-items: baseline; gap: 12px;
+  padding-bottom: 14px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--rule-doc);
+  flex-wrap: wrap;
+}
+.resp-meta .line1 {
+  font-family: var(--serif);
+  font-variation-settings: 'SOFT' 0, 'WONK' 0, 'opsz' 24;
+  font-weight: 500; font-size: 15px; color: var(--ink);
+}
+.resp-head .line2 {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  font-size: 11.5px; color: var(--ink-3);
+  margin-top: 6px;
+}
+.resp-head .line2 .mono { font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+.resp-head .line2 b { color: var(--ink-2); font-weight: 600; }
+.model-chip {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em;
+  color: var(--ink-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+  padding: 2px 6px;
+}
+
+/* the lede — the one place with real editorial voice */
+.summary {
+  font-family: var(--serif);
+  font-variation-settings: 'SOFT' 0, 'WONK' 0, 'opsz' 20;
+  font-weight: 300;
+  font-size: 17px; line-height: 1.58; letter-spacing: -0.004em;
+  color: var(--ink);
+  max-width: 62ch;
+  margin-bottom: 30px;
+  text-wrap: pretty;
+}
+.summary .hl { font-weight: 600; }
+
+.resp-section-title {
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--mono);
+  font-size: 9.5px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 14px;
+}
+.resp-section-title::after { content: ""; flex: 1; height: 1px; background: var(--rule-doc); }
+
+/* extracted fields — a definition grid, ruled not boxed */
+.kv-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0 34px;
+  margin-bottom: 32px;
+}
+.kv { padding: 11px 0; border-bottom: 1px solid var(--rule-doc); }
+.kv .k {
+  font-family: var(--mono);
+  font-size: 9.5px; font-weight: 500; letter-spacing: 0.11em; text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 5px;
+}
+.kv .v {
+  font-family: var(--mono); font-size: 13px; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.kv .v.amount { font-weight: 600; }
+.kv .v.missing { color: var(--ink-4); font-style: italic; }
+
+/* flags — ruled callouts with a colour-bearing edge */
+.flags { display: flex; flex-direction: column; gap: 1px; margin-bottom: 30px; }
+.flag {
+  display: flex; gap: 13px; align-items: flex-start;
+  padding: 14px 16px;
+  border-left: 2px solid;
+  font-size: 13px; line-height: 1.55;
+  color: var(--ink-2);
+}
+.flag .fi { flex: 0 0 auto; margin-top: 1px; }
+.flag .fi svg { width: 15px; height: 15px; }
+.flag b { color: var(--ink); font-weight: 600; }
+.flag .sev {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
+  margin-bottom: 5px;
+}
+.flag.danger { border-left-color: var(--flag); background: rgba(176,52,31,0.045); }
+.flag.danger .fi, .flag.danger .sev { color: var(--flag); }
+.flag.warn   { border-left-color: var(--warn); background: rgba(143,93,12,0.05); }
+.flag.warn .fi, .flag.warn .sev { color: var(--warn); }
+.flag.info   { border-left-color: var(--signal); background: rgba(31,111,235,0.04); }
+.flag.info .fi, .flag.info .sev { color: var(--signal); }
+
+/* actions */
+.resp-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule-doc);
+}
+.resp-actions .grow { flex: 1; }
+.act-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--sans); font-size: 12.5px; font-weight: 500;
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.act-btn:hover { color: var(--ink); border-color: var(--ink); }
+.act-btn svg { width: 14px; height: 14px; }
+.act-btn.primary { color: var(--doc); background: var(--ink); border-color: var(--ink); font-weight: 600; }
+.act-btn.primary:hover { background: #22304A; }
+.act-btn.saved { color: var(--good); border-color: rgba(18,115,90,0.4); cursor: default; }
+
+/* ---- empty + analyzing states ---- */
+.empty-state {
+  grid-column: 2;
+  padding: 34px 0;
+  border-top: 1px solid var(--rule-doc);
+}
+.empty-state .t {
+  font-family: var(--serif);
+  font-variation-settings: 'SOFT' 0, 'WONK' 0, 'opsz' 24;
+  font-weight: 400; font-size: 17px; color: var(--ink-2);
+  margin-bottom: 7px;
+}
+.empty-state .d { font-size: 13px; line-height: 1.6; color: var(--ink-3); max-width: 46ch; }
+.empty-state .d b { color: var(--ink-2); font-weight: 600; }
+
+.analyzing {
+  grid-column: 2;
+  display: flex; align-items: center; gap: 14px;
+  padding: 26px 0;
+  border-top: 1px solid var(--rule-doc);
+  font-size: 13.5px; color: var(--ink-2);
+}
+.spinner {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 1.5px solid var(--rule-strong);
+  border-top-color: var(--ink);
+  animation: spin 0.75s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.thinking-dots span { animation: blink 1.3s infinite; }
+.thinking-dots span:nth-child(2) { animation-delay: 0.18s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes blink { 0%,100% { opacity: 0.2; } 50% { opacity: 1; } }
+
+/* mock-only: label the alternate states so they read as states, not as content */
+.state-demo {
+  grid-column: 2;
+  margin-top: 30px;
+  padding-top: 4px;
+}
+.state-demo > .micro { display: block; margin-bottom: 2px; color: var(--ink-4); }
+
+/* scrollbars */
+.doc-list::-webkit-scrollbar, .right-panel::-webkit-scrollbar { width: 10px; }
+.doc-list::-webkit-scrollbar-thumb, .right-panel::-webkit-scrollbar-thumb {
+  background: var(--rule-strong); border: 3px solid transparent; background-clip: padding-box; border-radius: 99px;
+}
+.doc-list::-webkit-scrollbar-thumb:hover, .right-panel::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-4); background-clip: padding-box;
+}
+
+@media (max-width: 1080px) {
+  .main { grid-template-columns: minmax(300px, 38%) 1fr; }
+  .right-panel { padding: 0 26px 56px; }
+  .zone { grid-template-columns: 42px 1fr; column-gap: 18px; }
+  .zone-mark .n { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+
+<body>
+<div class="app-shell">
+
+  <!-- ===================== TOP BAR ===================== -->
+  <header class="topbar">
+    <div class="brand">
+      <!-- port note: assets/taldar-logo-white.png can't sit on paper; needs a dark-ink asset -->
+      <span class="wordmark">TALDAR</span>
+      <span class="divider"></span>
+      <span class="screen-title">Document Intelligence</span>
+    </div>
+    <div class="crumbs">
+      <span class="seg">Intake &amp; Analysis</span>
+      <span>·</span>
+      <span class="ctx">Customer #CST-20</span>
+    </div>
+    <div class="spacer"></div>
+    <span class="module-tag">Claims Workspace</span>
+    <div class="avatar" title="adi — right-click to log out">
+      <span class="initial">A</span>
+      adi
+    </div>
+  </header>
+
+  <div class="main">
+
+    <!-- ===================== LEFT PANEL ===================== -->
+    <aside class="left-panel">
+      <div class="panel-head">
+        <div class="eyebrow">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+          <span class="micro">Process Context</span>
+        </div>
+
+        <div class="ctx-bar">
+          <div class="segmented" role="tablist">
+            <button class="active">Customer</button>
+            <button>Policy</button>
+            <button>Claim</button>
+            <button>Risk Event</button>
+          </div>
+
+          <div class="id-row">
+            <div class="id-input-wrap">
+              <span class="lead">CST-</span>
+              <input class="id-input" value="John Doe (01234567)" spellcheck="false" aria-label="Object ID" />
+            </div>
+            <button class="icon-btn" aria-label="Look up process">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            </button>
+          </div>
+
+          <span class="linked-badge"><span class="dot"></span>1 document linked to this process</span>
+        </div>
+      </div>
+
+      <div class="list-toolbar">
+        <span class="count"><b>20</b> DOCUMENTS · <b>1</b> SELECTED</span>
+        <button class="ghost-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+          Load from Server
+        </button>
+      </div>
+
+      <div class="doc-list">
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">medicalfile1.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">medicalfile2.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">medicalfile3.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <!-- selected -->
+        <div class="doc-card selected">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon image">jpg</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">medicalfile4.jpg</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">medicalfile5.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">medicalfile6.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <!-- RTL filename: dir="auto" keeps the row from breaking -->
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">שאלון יב - מחלות מטבוליות__DU1133178599.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">medicalfile4.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <!-- an uploaded, not-yet-archived file: shows the Archive affordance -->
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon image">png</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">cartoon1.png</div>
+            <div class="sub"><span class="date">Aug 14, 2026</span><span class="cat-tag">Uploaded</span><span class="not-arch">Not archived</span></div>
+          </div>
+          <button class="arch-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Archive
+          </button>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon word">docx</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">adjuster-statement-CST20.docx</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+        <div class="doc-card">
+          <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+          <span class="file-icon pdf">pdf</span>
+          <div class="doc-meta">
+            <div class="name" dir="auto">FNOL-CST20-2026-08-01.pdf</div>
+            <div class="sub"><span class="date">Aug 01, 2026</span><span class="cat-tag">Archive</span></div>
+          </div>
+          <span class="doc-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        </div>
+
+      </div>
+
+      <div class="left-footer">
+        <button class="btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Attach &amp; Send to OCR
+          <span class="pill-count">1</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ===================== RIGHT PANEL ===================== -->
+    <div class="right-panel">
+
+      <!-- ---------- 01 / OCR ---------- -->
+      <section class="zone">
+        <div class="zone-mark"><span class="n">01</span><span class="l">OCR</span></div>
+
+        <div class="zone-head">
+          <span class="z-title">Status Board</span>
+          <span class="z-sub">parallel processing</span>
+          <span class="spacer"></span>
+          <div class="select-wrap">
+            <select aria-label="OCR engine">
+              <option>OCR: Azure Document Intelligence</option>
+              <option>OCR: Tesseract</option>
+            </select>
+            <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+          </div>
+          <span class="pill completed"><span class="dot"></span>1 done</span>
+        </div>
+
+        <div class="zone-body">
+          <div class="ocr-scroll">
+          <table class="ocr-table">
+            <thead>
+              <tr>
+                <th>Document</th>
+                <th>Status</th>
+                <th class="num">Confidence</th>
+                <th class="num">Pages</th>
+                <th>Timestamp</th>
+                <th>Raw</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div class="doc-cell">
+                    <span class="file-icon image">jpg</span>
+                    <span class="nm" dir="auto">medicalfile4.jpg</span>
+                  </div>
+                </td>
+                <td><span class="pill completed"><span class="dot"></span>Completed</span></td>
+                <td class="num"><span class="conf-strong">81%</span></td>
+                <td class="num">1</td>
+                <td><span class="ts">12:14:04</span></td>
+                <td>
+                  <button class="raw-link">View Raw OCR</button>
+                  <button class="raw-link">Save OCR data</button>
+                </td>
+              </tr>
+              <!-- a live row, to show the processing state -->
+              <tr>
+                <td>
+                  <div class="doc-cell">
+                    <span class="file-icon pdf">pdf</span>
+                    <span class="nm" dir="auto">FNOL-CST20-2026-08-01.pdf</span>
+                  </div>
+                </td>
+                <td><span class="pill processing"><span class="dot"></span>Processing</span></td>
+                <td class="num">
+                  <div class="mini-prog">
+                    <span class="track"><span class="fill" style="width:64%"></span></span>
+                    <span class="pct">64%</span>
+                  </div>
+                </td>
+                <td class="num muted">—</td>
+                <td><span class="ts">12:15:22</span></td>
+                <td><span class="muted" style="font-size:11.5px">—</span></td>
+              </tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 02 / ANALYSIS ---------- -->
+      <section class="zone">
+        <div class="zone-mark"><span class="n">02</span><span class="l">Analysis</span></div>
+
+        <div class="zone-head">
+          <span class="z-title">Instructions</span>
+          <span class="z-sub">select completed documents, then describe what to extract</span>
+        </div>
+
+        <div class="zone-body">
+          <div class="field-label">
+            <span class="micro">Documents</span>
+            <span class="hint">1 selected · OCR-completed only</span>
+          </div>
+          <div class="llm-checklist">
+            <span class="llm-chip-wrap">
+              <button class="llm-chip on">
+                <span class="cb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+                medicalfile4.jpg
+              </button>
+            </span>
+            <span class="llm-chip-wrap">
+              <button class="llm-chip disabled" disabled title="Awaiting OCR completion">
+                <span class="cb"></span>
+                FNOL-CST20-2026-08-01.pdf
+              </button>
+            </span>
+          </div>
+
+          <div class="field-label"><span class="micro">Analysis Instructions</span></div>
+          <textarea class="prompt-area">Extract all claim dates, amounts, and party names. Flag any inconsistencies between the FNOL and the adjuster statement.</textarea>
+
+          <div class="llm-controls">
+            <div class="select-wrap">
+              <select><option>Prompt Templates: Custom…</option><option>Template: Claim Extraction</option></select>
+              <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+            </div>
+            <div class="select-wrap">
+              <select aria-label="AI model"><option>Model: TALDAR Claims LLM</option></select>
+              <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+            </div>
+            <span class="spacer"></span>
+            <span class="save-note">Saved &amp; linked to <b>Customer #CST-20</b></span>
+            <button class="btn-analyze">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4L12 3z"/></svg>
+              Analyze with AI
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 03 / RESULT ---------- -->
+      <section class="zone">
+        <div class="zone-mark"><span class="n">03</span><span class="l">Result</span></div>
+
+        <div class="zone-head">
+          <span class="z-title">Analysis Result</span>
+          <span class="z-sub">AI-generated · review before saving to record</span>
+        </div>
+
+        <div class="zone-body">
+          <div class="response-card">
+
+            <div class="resp-head">
+              <div class="resp-meta">
+                <div class="line1">Extraction &amp; risk analysis complete</div>
+                <div class="line2">
+                  <span><b>1</b> doc: medicalfile4.jpg</span>
+                  <span class="mono">Aug 14, 2026 · 12:14</span>
+                  <span class="model-chip">TALDAR Claims LLM · v2.4</span>
+                </div>
+              </div>
+            </div>
+
+            <p class="summary" dir="auto">
+              The statement covers <span class="hl">01–31 July 2005</span> across four service line
+              items totalling <span class="hl">$400.00</span>, all billed at a flat $100.00. Two
+              findings need an adjuster's eye before this is accepted: the admission date field is
+              present but unreadable, and the recorded patient date of birth places the patient at
+              roughly seventeen months old at the time of service.
+            </p>
+
+            <div class="resp-section-title">Extracted Fields</div>
+            <div class="kv-grid">
+              <div class="kv"><div class="k">Statement Period</div><div class="v">07/01/2005 – 07/31/2005</div></div>
+              <div class="kv"><div class="k">Patient DOB</div><div class="v">02/24/2004</div></div>
+              <div class="kv"><div class="k">Admission Date</div><div class="v missing">not readable</div></div>
+              <div class="kv"><div class="k">Service Dates</div><div class="v">07/12 · 07/14 · 07/20 · 07/22</div></div>
+              <div class="kv"><div class="k">Line Items</div><div class="v">4</div></div>
+              <div class="kv"><div class="k">Charge / Item</div><div class="v amount">$100.00</div></div>
+              <div class="kv"><div class="k">Total Charges</div><div class="v amount">$400.00</div></div>
+              <div class="kv"><div class="k">OCR Confidence</div><div class="v">81%</div></div>
+            </div>
+
+            <div class="resp-section-title">Risk Flags</div>
+            <div class="flags">
+              <div class="flag danger">
+                <span class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
+                <div>
+                  <span class="sev">Inconsistency</span>
+                  <b>Patient age at service is implausible.</b> A date of birth of 02/24/2004 against
+                  July 2005 service dates makes the patient ~17 months old. Verify the DOB against the
+                  FNOL before payment.
+                </div>
+              </div>
+              <div class="flag warn">
+                <span class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
+                <div>
+                  <span class="sev">Missing data</span>
+                  <b>Admission date could not be read.</b> The field is present on the form but the
+                  scan is too degraded to resolve it. Re-scan at higher DPI or key it in manually.
+                </div>
+              </div>
+              <div class="flag info">
+                <span class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span>
+                <div>
+                  <span class="sev">Confidence</span>
+                  <b>OCR confidence is 81%, below the 90% auto-accept threshold.</b> Extracted values
+                  on this document are advisory until reviewed.
+                </div>
+              </div>
+            </div>
+
+            <div class="resp-actions">
+              <button class="act-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export to PDF
+              </button>
+              <button class="act-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                Save to Record
+              </button>
+              <button class="act-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+                Re-run with New Prompt
+              </button>
+              <span class="grow"></span>
+              <button class="act-btn primary">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.9-.9L3 21l1.9-5.1A8.4 8.4 0 0 1 4 11.5a8.5 8.5 0 0 1 8.5-8.5 8.4 8.4 0 0 1 8.5 8.5z"/></svg>
+                Start Chat on These Docs
+              </button>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- mock-only: the other two states of this same section -->
+        <div class="state-demo">
+          <span class="micro">Alternate state — analyzing</span>
+          <div class="analyzing" style="grid-column:auto">
+            <span class="spinner"></span>
+            <span>Running extraction across selected documents<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span>
+          </div>
+        </div>
+
+        <div class="state-demo">
+          <span class="micro">Alternate state — empty</span>
+          <div class="empty-state" style="grid-column:auto">
+            <div class="t">No analysis yet</div>
+            <div class="d">Select OCR-completed documents above, enter your instructions, and run <b>Analyze with AI</b> to generate a result.</div>
+          </div>
+        </div>
+
+      </section>
+
+    </div>
+  </div>
+</div>
+</body>
+</html>
