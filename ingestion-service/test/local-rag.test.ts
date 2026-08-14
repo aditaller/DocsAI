@@ -231,7 +231,7 @@ function ocrClientReturning(body: unknown, capture?: Array<Record<string, unknow
 
 const RENDERED_PAGE = { pageIndex: 1, mimeType: 'image/png' as const, bytes: Buffer.from([137, 80, 78, 71]) };
 
-test('OCR disables thinking, requests JSON, and sets the context', async () => {
+test('OCR disables thinking and sets the context, and omits format by default', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const client = ocrClientReturning({ response: '{"text":"transcribed text"}', done_reason: 'stop' }, calls);
 
@@ -239,8 +239,31 @@ test('OCR disables thinking, requests JSON, and sets the context', async () => {
   // qwen3.6 spends its whole budget in the thinking channel otherwise, returning
   // an empty response with done_reason "length".
   assert.equal(calls[0]?.['think'], false);
-  assert.equal(calls[0]?.['format'], 'json');
   assert.deepEqual(calls[0]?.['options'], { num_ctx: 16_384 });
+  // Grammar-constrained JSON is opt-in: it empties the response on qwen3-vl:4b.
+  assert.ok(!('format' in (calls[0] ?? {})), 'format must not be sent unless enabled');
+});
+
+test('OCR sends format json only when it is switched on', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const client = new OllamaClient({
+    baseUrl: new URL('http://127.0.0.1:11434'),
+    ocrModel: 'vision',
+    embeddingModel: 'embed',
+    dimensions: 3,
+    numContext: 16_384,
+    ocrJsonFormat: true,
+    fetchImplementation: (async (_input: URL | RequestInfo, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ response: '{"text":"ok"}', done_reason: 'stop' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'ok');
+  assert.equal(calls[0]?.['format'], 'json');
 });
 
 test('a JSON reply that breaks the contract still yields its text rather than nothing', async () => {

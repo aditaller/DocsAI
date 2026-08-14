@@ -52,6 +52,7 @@ async function main(): Promise<void> {
       embeddingModel: config.ollama.embeddingModel,
       dimensions: config.embeddingDimensions,
       numContext: config.ollama.numContext,
+      ocrJsonFormat: config.ollama.ocrJsonFormat,
       onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
     }),
     mappingVersion: config.archiveMapping.version,

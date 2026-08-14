@@ -37,6 +37,8 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       // environment. The HTTP server refuses to start without it.
       chatModel?: string;
       numContext: number;
+      /** Send `format: "json"` on OCR calls. Not every vision model survives it. */
+      ocrJsonFormat?: boolean;
       /** Called when a page came back truncated, so the run can say so. */
       onTruncated?: (pageIndex: number) => void;
       fetchImplementation?: typeof fetch;
@@ -51,10 +53,11 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       // otherwise spend its whole output budget in the thinking channel and
       // return an empty `response` with done_reason "length".
       think: false,
-      // Constrains the reply to valid JSON so no preamble ("Here is the text:")
-      // can leak into the indexed page. extractTranscription unwraps it, and
-      // falls back to the raw string if the model breaks the contract.
-      format: 'json',
+      // Grammar-constrained JSON. Opt-in, because qwen3-vl:4b answers with a
+      // full response worth of tokens and an empty body under it. The prompt
+      // below asks for the same shape regardless, and extractTranscription
+      // unwraps whatever arrives, so this only adds the hard constraint.
+      ...(this.options.ocrJsonFormat ? { format: 'json' } : {}),
       prompt:
         'Transcribe all legible text in this document page. Preserve reading order. Do not summarize or invent text. ' +
         'Respond with a JSON object of the form {"text": "<the full transcription>"} and nothing else.',

@@ -43,6 +43,11 @@ const environmentSchema = z.object({
   // Ollama defaults to 4096 whatever the model supports, which truncates dense
   // pages and large retrieval prompts.
   OLLAMA_NUM_CTX: z.coerce.number().int().min(2_048).max(1_048_576).default(16_384),
+  // Grammar-constrained JSON output. Off by default: qwen3-vl:4b generates a
+  // full response worth of tokens and then returns an empty body under it. The
+  // OCR prompt asks for the same JSON shape either way, and extractTranscription
+  // unwraps whatever comes back, so this only adds the hard constraint.
+  OLLAMA_OCR_JSON_FORMAT: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   LOCAL_API_PORT: z.coerce.number().int().min(1_024).max(65_535).default(11_500),
   RAG_TOP_K: z.coerce.number().int().min(1).max(100).default(8),
   PDFTOPPM_PATH: z.string().min(1).default('pdftoppm'),
@@ -70,6 +75,7 @@ export interface AppConfig {
     embeddingModel: string;
     chatModel?: string;
     numContext: number;
+    ocrJsonFormat: boolean;
   };
   embeddingDimensions: number;
   localApiPort: number;
@@ -157,6 +163,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       embeddingModel: env.OLLAMA_EMBEDDING_MODEL,
       ...(env.OLLAMA_CHAT_MODEL ? { chatModel: env.OLLAMA_CHAT_MODEL } : {}),
       numContext: env.OLLAMA_NUM_CTX,
+      ocrJsonFormat: env.OLLAMA_OCR_JSON_FORMAT,
     },
     embeddingDimensions: env.EMBEDDING_DIMENSIONS,
     localApiPort: env.LOCAL_API_PORT,

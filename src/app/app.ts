@@ -76,6 +76,7 @@ import { TopBarComponent } from './components/top-bar';
             [engineId]="ocrEngineId()"
             (viewRaw)="rawJob.set($event)"
             (saveOcr)="onSaveOcr($event)"
+            (removeJob)="onRemoveJob($event)"
             (engineChange)="ocrEngineId.set($event)"
           />
           <di-llm-panel
@@ -259,6 +260,13 @@ export class App {
     if (!d?.file) return; // only server-loaded uploads are removable
     this.docs.update((ds) => ds.filter((x) => x.id !== id));
     this.jobs.update((js) => js.filter((j) => j.docId !== id)); // drop any OCR job for it
+  }
+
+  // Drop a row off the status board. ponytail: board-only — the document stays in the
+  // left panel (and in gnr.archive), so Attach can queue it again.
+  onRemoveJob(job: Job) {
+    this.jobs.update((js) => js.filter((j) => j.jobId !== job.jobId));
+    this.llmSelected.update((s) => s.filter((id) => id !== job.jobId));
   }
 
   onOpenDoc(d: Doc) {

@@ -44,6 +44,7 @@ async function main(): Promise<void> {
     dimensions: config.embeddingDimensions,
     chatModel: config.ollama.chatModel,
     numContext: config.ollama.numContext,
+    ocrJsonFormat: config.ollama.ocrJsonFormat,
     onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
   });
   // No archiveReader: every route here supplies its own bytes, so this process

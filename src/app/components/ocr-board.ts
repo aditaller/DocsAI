@@ -91,6 +91,9 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
                   } @else {
                     <span class="muted" style="font-size:11.5px">—</span>
                   }
+                  <button class="raw-link" (click)="removeJob.emit(j)" title="Remove file from the board">
+                    <di-icon name="trash" [size]="12" /> Remove
+                  </button>
                 </td>
               </tr>
             }
@@ -107,6 +110,7 @@ export class OcrBoardComponent {
 
   viewRaw = output<Job>();
   saveOcr = output<Job>();
+  removeJob = output<Job>();
   engineChange = output<string>();
 
   readonly engines = DI_CONFIG.ocr.engines;
