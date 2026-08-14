@@ -336,23 +336,39 @@ export class App {
 
     // Run OCR on every fresh doc: uploads carry their File directly; archive docs
     // stream their bytes from the getarchivedata route first.
-    for (const doc of fresh) {
-      const job = newJobs.find((j) => j.docId === doc.id)!;
-      this.runOcr(doc).then((result) => {
-        this.jobs.update((js) =>
-          js.map((j) =>
-            j.jobId === job.jobId
-              ? { ...j, status: 'completed', confidence: result.confidence, pages: result.pages, progress: 100, ts: nowClock(), raw: result.raw, ocr: result.api, ragDocumentId: result.ragDocumentId ?? null }
-              : j
-          )
-        );
-      }).catch((err) => {
-        console.error(`OCR failed for ${doc.name}:`, err);
-        this.jobs.update((js) =>
-          js.map((j) => (j.jobId === job.jobId ? { ...j, status: 'failed', ts: nowClock() } : j))
-        );
-        this.addToast(`${this.mode() === 'local' ? 'Local OCR' : 'OCR'} failed for ${doc.name}`, 'error');
-      });
+    //
+    // Azure is a hosted service and absorbs the whole batch at once. One local
+    // model serves one request at a time, so firing them together only makes
+    // them queue inside Ollama: measured here, three concurrent pages turned a
+    // 10s page into 52s, and a large enough batch pushes the later ones past
+    // the request timeout. Local mode therefore runs them one after another.
+    if (this.mode() === 'local') {
+      void (async () => {
+        for (const doc of fresh) await this.runOcrForJob(doc, newJobs);
+      })();
+    } else {
+      for (const doc of fresh) void this.runOcrForJob(doc, newJobs);
+    }
+  }
+
+  /** OCRs one document and folds the outcome into its job row. Never rejects. */
+  private async runOcrForJob(doc: Doc, jobs: Job[]): Promise<void> {
+    const job = jobs.find((j) => j.docId === doc.id)!;
+    try {
+      const result = await this.runOcr(doc);
+      this.jobs.update((js) =>
+        js.map((j) =>
+          j.jobId === job.jobId
+            ? { ...j, status: 'completed', confidence: result.confidence, pages: result.pages, progress: 100, ts: nowClock(), raw: result.raw, ocr: result.api, ragDocumentId: result.ragDocumentId ?? null }
+            : j
+        )
+      );
+    } catch (err) {
+      console.error(`OCR failed for ${doc.name}:`, err);
+      this.jobs.update((js) =>
+        js.map((j) => (j.jobId === job.jobId ? { ...j, status: 'failed', ts: nowClock() } : j))
+      );
+      this.addToast(`${this.mode() === 'local' ? 'Local OCR' : 'OCR'} failed for ${doc.name}`, 'error');
     }
   }
 
