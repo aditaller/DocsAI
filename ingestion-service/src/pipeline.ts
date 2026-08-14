@@ -1,5 +1,5 @@
 import { contentHash, chunkPages } from './chunker.js';
-import { ServiceError, sanitizeError } from './errors.js';
+import { ServiceError, sanitizeError, type ErrorCode } from './errors.js';
 import { Logger } from './logger.js';
 import type { OcrEmbedder } from './ollama.js';
 import type { RagStore } from './rag-store.js';
@@ -15,6 +15,12 @@ export interface IngestionResult {
   ragDocumentId?: number;
   /** Present only on a fresh `completed` run; a skip reuses what is already stored. */
   pages?: TextPage[];
+  /**
+   * Why a run did not complete. Already sanitized, so callers may surface it.
+   * Without this the HTTP layer can only report that something failed, which
+   * hides causes like a missing claim behind a generic message.
+   */
+  error?: { code: ErrorCode; message: string; retryable: boolean };
 }
 
 export class IngestionPipeline {
@@ -167,7 +173,7 @@ export class IngestionPipeline {
       const safe = sanitizeError(error);
       if (!jobId) {
         this.dependencies.logger.error('ingestion_failed_before_job', { archiveId, ...safe });
-        return { archiveId, outcome: 'failed' };
+        return { archiveId, outcome: 'failed', error: safe };
       }
       const retryable = safe.retryable && attempts < this.dependencies.maxAttempts;
       const nextAttemptAt = retryable
@@ -187,7 +193,7 @@ export class IngestionPipeline {
         code: safe.code,
         message: safe.message,
       });
-      return { archiveId, outcome: retryable ? 'retry_wait' : 'failed' };
+      return { archiveId, outcome: retryable ? 'retry_wait' : 'failed', error: safe };
     }
   }
 

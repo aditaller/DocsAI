@@ -4,7 +4,15 @@ import { OcrResult } from './ocr.service';
 
 export interface LocalIngestResult extends OcrResult {
   ragDocumentId: number | null;
+  scopeId: number | null;
   reused: boolean;
+}
+
+/** Identifies the record documents are scoped to, mirroring gnr.archive.object_type. */
+export interface RagScope {
+  objectType: string;
+  objectId: number;
+  label: string;
 }
 
 export interface Citation {
@@ -25,7 +33,6 @@ export interface LocalHealth {
   postgres: boolean;
   ollama: boolean;
   missingModels: string[];
-  claimIdPresent: boolean | null;
 }
 
 /**
@@ -35,11 +42,13 @@ export interface LocalHealth {
  */
 @Injectable({ providedIn: 'root' })
 export class LocalRagService {
-  /** OCRs the bytes locally and indexes every page into pgvector. */
-  async ingest(file: File, archiveId: number, claimId: number): Promise<LocalIngestResult> {
+  /** OCRs the bytes locally and indexes every page into pgvector under the record's scope. */
+  async ingest(file: File, archiveId: number, scope: RagScope): Promise<LocalIngestResult> {
     const url = new URL(DI_CONFIG.local.ingestEndpoint, location.origin);
     url.searchParams.set('archiveId', String(archiveId));
-    url.searchParams.set('claimId', String(claimId));
+    url.searchParams.set('objectType', scope.objectType);
+    url.searchParams.set('objectId', String(scope.objectId));
+    url.searchParams.set('label', scope.label);
     url.searchParams.set('fileName', file.name);
 
     const t0 = performance.now();
@@ -61,6 +70,7 @@ export class LocalRagService {
       raw: { pages: pages.length, avgConf: 0, lowConf: 0, lines: pages.map((p) => `[Page ${p.pageNumber}] ${p.text}`) },
       api: r,
       ragDocumentId: r['ragDocumentId'] ?? null,
+      scopeId: r['scopeId'] ?? null,
       reused: r['reused'] === true,
     };
   }
@@ -80,21 +90,16 @@ export class LocalRagService {
     };
   }
 
-  /**
-   * Drives whether the toggle is offered at all. Pass the record id to also learn
-   * whether it exists in rag.claim — ingest fails on its foreign key otherwise.
-   */
-  async health(claimId?: number): Promise<LocalHealth> {
-    const url = new URL(DI_CONFIG.local.healthEndpoint, location.origin);
-    if (claimId) url.searchParams.set('claimId', String(claimId));
+  /** Drives whether the toggle is offered at all. */
+  async health(): Promise<LocalHealth> {
     try {
-      const res = await fetch(url.toString());
+      const res = await fetch(new URL(DI_CONFIG.local.healthEndpoint, location.origin).toString());
       if (!res.ok) throw new Error(String(res.status));
       return (await res.json()) as LocalHealth;
     } catch {
       // An unstarted server.js is the common case; report it as unavailable
       // rather than letting the failure surface later as an OCR error.
-      return { ok: false, postgres: false, ollama: false, missingModels: [], claimIdPresent: null };
+      return { ok: false, postgres: false, ollama: false, missingModels: [] };
     }
   }
 

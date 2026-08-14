@@ -79,13 +79,15 @@ async function main(): Promise<void> {
     const url = new URL(request.url ?? '/', `http://${HOST}`);
     const route = `${request.method} ${url.pathname}`;
 
-    if (route === 'GET /api/local/health') return sendJson(response, 200, await health(url));
+    if (route === 'GET /api/local/health') return sendJson(response, 200, await health());
     if (route === 'POST /api/local/ingest') return sendJson(response, 200, await ingest(url, request));
     if (route === 'POST /api/local/chat') return sendJson(response, 200, await chat(request));
     return sendJson(response, 404, { error: 'Unknown route', code: 'unknown' });
   }
 
-  async function health(url: URL): Promise<Record<string, unknown>> {
+  // Scope rows are created on demand now, so there is no per-record readiness to
+  // report and this takes no parameters.
+  async function health(): Promise<Record<string, unknown>> {
     const [postgres, models] = await Promise.all([
       ragStore.preflight().then(() => true).catch(() => false),
       listOllamaModels().catch(() => null),
@@ -93,40 +95,45 @@ async function main(): Promise<void> {
     const required = [config.ollama.ocrModel, config.ollama.embeddingModel, config.ollama.chatModel!];
     const missingModels = models ? required.filter((name) => !models.some((m) => m === name || m.startsWith(`${name}:`))) : required;
 
-    // Reported per record so the UI can warn before ingest rather than failing
-    // mid-batch on the rag.claim foreign key.
-    const claimId = Number(url.searchParams.get('claimId'));
-    const claimIdPresent = postgres && Number.isSafeInteger(claimId) && claimId > 0
-      ? await ragStore.claimExists(claimId).catch(() => false)
-      : null;
-
     return {
       ok: postgres && models !== null && missingModels.length === 0,
       postgres,
       ollama: models !== null,
       missingModels,
-      claimIdPresent,
     };
   }
 
   async function ingest(url: URL, request: http.IncomingMessage): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const archiveId = requirePositiveInteger(url.searchParams.get('archiveId'), 'archiveId');
-    const claimId = requirePositiveInteger(url.searchParams.get('claimId'), 'claimId');
+    const objectType = (url.searchParams.get('objectType') ?? '').trim();
+    const objectId = requirePositiveInteger(url.searchParams.get('objectId'), 'objectId');
+    const label = (url.searchParams.get('label') ?? '').trim();
     const fileName = (url.searchParams.get('fileName') ?? `archive-${archiveId}`).slice(0, 260);
     const bytes = await readBody(request, config.limits.maxSourceBytes);
     if (!bytes.length) throw new ServiceError('Request body is empty', 'unsupported_file', false);
 
+    // Entity ids are unique only within their type, so the scope row is resolved
+    // to a surrogate rag.claim.id rather than using objectId directly.
+    const scopeId = await ragStore.resolveScope(objectType, objectId, label);
+
     const result = await pipeline.ingestSource({
       archiveId,
-      sourceClaimId: claimId,
+      sourceClaimId: scopeId,
       fileName,
       mimeType: request.headers['content-type'] ?? 'application/octet-stream',
       bytes,
     });
 
     if (result.outcome === 'failed' || result.outcome === 'retry_wait') {
-      throw new ServiceError(`Ingestion ${result.outcome} for archive ${archiveId}`, 'ollama', result.outcome === 'retry_wait');
+      // Surface the pipeline's own reason. Inventing a code here once turned a
+      // missing rag.claim row into a misleading "ollama" error.
+      const cause = result.error;
+      throw new ServiceError(
+        cause ? `Ingestion failed for archive ${archiveId}: ${cause.message}` : `Ingestion ${result.outcome} for archive ${archiveId}`,
+        cause?.code ?? 'unknown',
+        result.outcome === 'retry_wait',
+      );
     }
 
     // A skip means these exact bytes are already indexed, so the stored OCR text
@@ -135,6 +142,7 @@ async function main(): Promise<void> {
     return {
       documentId: result.documentId ?? null,
       ragDocumentId: result.ragDocumentId ?? null,
+      scopeId,
       reused: result.outcome === 'skipped',
       modelid: config.ollama.ocrModel,
       content: pages.map((page) => `# Page ${page.pageIndex}\n\n${page.text}`).join('\n\n'),

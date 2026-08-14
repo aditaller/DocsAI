@@ -57,6 +57,10 @@ export class FakeChatModel implements ChatModel {
 export class FakeRagStore implements RagStore {
   hits: ChunkHit[] = [];
   storedPages: TextPage[] = [];
+  /** Deliberately unequal to any entity id a test passes, so a mix-up shows up. */
+  scopeId = 4242;
+  scopeCalls: Array<{ objectType: string; objectId: number; label: string }> = [];
+  createdWith?: { archiveId: number; claimId: number };
   lastSearch?: { embedding: number[]; documentIds: number[]; topK: number };
   completed?: { jobId: number; documentId: number };
   failure?: { jobId: number; state: 'RETRY_WAIT' | 'FAILED' };
@@ -75,7 +79,8 @@ export class FakeRagStore implements RagStore {
     return [];
   }
 
-  async createJob(_sourceArchiveId: number, _sourceClaimId: number, _mappingVersion: string, _sourceFingerprint: string, _sourceHash: string): Promise<JobRecord> {
+  async createJob(sourceArchiveId: number, sourceClaimId: number, _mappingVersion: string, _sourceFingerprint: string, _sourceHash: string): Promise<JobRecord> {
+    this.createdWith = { archiveId: sourceArchiveId, claimId: sourceClaimId };
     return { id: 1, ragClaimId: 5, state: 'PENDING', attempts: 0, claimed: false };
   }
 
@@ -110,8 +115,9 @@ export class FakeRagStore implements RagStore {
     return this.storedPages;
   }
 
-  async claimExists(_claimId: number): Promise<boolean> {
-    return true;
+  async resolveScope(objectType: string, objectId: number, label: string): Promise<number> {
+    this.scopeCalls.push({ objectType, objectId, label });
+    return this.scopeId;
   }
 
   async close(): Promise<void> {}

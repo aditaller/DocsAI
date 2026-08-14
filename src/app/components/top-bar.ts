@@ -59,6 +59,7 @@ export class TopBarComponent {
     if (!h.postgres) return 'PostgreSQL/pgvector is unreachable or the rag schema is not migrated';
     if (!h.ollama) return 'Ollama is unreachable at its configured loopback address';
     if (h.missingModels.length) return `Ollama is missing: ${h.missingModels.join(', ')}`;
+    // No per-record check: the scope row is created on first ingest.
     return 'Ollama vision OCR into pgvector, answers from the local model';
   });
 

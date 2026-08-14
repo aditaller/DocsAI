@@ -1,12 +1,12 @@
 import { Pool, type PoolClient } from 'pg';
 
 import { contentHash } from './chunker.js';
-import { quotePostgresIdentifier, quotePostgresRelation } from './config.js';
+import { quotePostgresRelation } from './config.js';
 import { ServiceError } from './errors.js';
 import type { IngestionJobState, TextChunk, TextPage } from './types.js';
 
-const ALLOCATOR_LOCK = 161803399;
 const SOURCE_LOCK = 271828182;
+const SCOPE_LOCK = 141421356;
 const OLLAMA_PARSER_CODE = 'OLLAMA_QWEN3_6_LOCAL';
 const RAG_SCHEMA = 'rag';
 
@@ -99,7 +99,7 @@ export interface RagStore {
   failJob(jobId: number, state: 'RETRY_WAIT' | 'FAILED', error: { code: string; message: string }, nextAttemptAt?: Date): Promise<void>;
   searchChunks(embedding: number[], documentIds: number[], topK: number): Promise<ChunkHit[]>;
   getDocumentPages(documentId: number): Promise<TextPage[]>;
-  claimExists(claimId: number): Promise<boolean>;
+  resolveScope(objectType: string, objectId: number, label: string): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -125,7 +125,6 @@ export class PostgresRagStore implements RagStore {
       this.assertColumns('ingestionrun', [...BASE_COLUMNS.ingestionrun, ...RUN_COLUMNS]),
       this.assertColumns('documentpage', ['id', 'documentid', 'pagenumber', 'ocrtext', 'contenthash']),
       this.assertColumns('documentchunkpage', ['documentchunkid', 'documentpageid']),
-      this.assertColumns('rag_integer_allocator', ['allocator_name', 'next_value']),
       this.assertColumns('ingestion_preflight_run', ['id', 'mappingversion', 'succeeded', 'detail']),
     ]);
 
@@ -141,9 +140,9 @@ export class PostgresRagStore implements RagStore {
 
   async recordPreflight(mappingVersion: string, succeeded: boolean, detail: unknown): Promise<void> {
     await this.pool.query(
-      `INSERT INTO ${this.table('ingestion_preflight_run')} (id, mappingversion, succeeded, detail)
-       VALUES ($1, $2, $3, $4::jsonb)`,
-      [await this.allocate('ingestion_preflight_run'), mappingVersion, succeeded, JSON.stringify(detail)],
+      `INSERT INTO ${this.table('ingestion_preflight_run')} (mappingversion, succeeded, detail)
+       VALUES ($1, $2, $3::jsonb)`,
+      [mappingVersion, succeeded, JSON.stringify(detail)],
     );
   }
 
@@ -169,16 +168,15 @@ export class PostgresRagStore implements RagStore {
       await this.assertClaimExists(sourceClaimId, client);
       const result = await client.query<JobRow>(
         `INSERT INTO ${this.table('ingestionrun')} (
-           id, createuserid, documentid, claimid, parsercode, embeddingmodel, embeddingdims, statuscode,
+           createuserid, documentid, claimid, parsercode, embeddingmodel, embeddingdims, statuscode,
            archiveid, mappingversion, sourcefingerprint, sourcehash, attempts
          )
-         VALUES ($1, $2, NULL, $3, $4, $5, $6, 'PENDING', $7, $8, $9, $10, 0)
+         VALUES ($1, NULL, $2, $3, $4, $5, 'PENDING', $6, $7, $8, $9, 0)
          ON CONFLICT (archiveid, mappingversion, sourcefingerprint)
            WHERE archiveid IS NOT NULL AND mappingversion IS NOT NULL AND sourcefingerprint IS NOT NULL
          DO UPDATE SET sourcehash = EXCLUDED.sourcehash
          RETURNING id, claimid AS ragclaimid, documentid, statuscode AS state, attempts, nextattemptat`,
         [
-          await this.allocate('ingestionrun', client),
           this.options.writeUserId,
           sourceClaimId,
           OLLAMA_PARSER_CODE,
@@ -203,7 +201,8 @@ export class PostgresRagStore implements RagStore {
   async claimJob(jobId: number): Promise<JobRecord> {
     const result = await this.pool.query<JobRow>(
       `UPDATE ${this.table('ingestionrun')}
-       SET statuscode = 'PARSING', attempts = attempts + 1, processingstartedat = now(),
+       SET statuscode = 'PARSING', attempts = attempts + 1,
+           processingstartedat = now(), startedat = now(),
            errormessage = NULL
        WHERE id = $1 AND statuscode IN ('PENDING', 'RETRY_WAIT')
          AND (nextattemptat IS NULL OR nextattemptat <= now())
@@ -256,24 +255,23 @@ export class PostgresRagStore implements RagStore {
         return { id: documentId, ragDocumentId: documentId, alreadyExisted: true };
       }
 
-      const documentId = await this.allocate('document', client);
-      await client.query(
+      const inserted = await client.query<{ id: number | string }>(
         `INSERT INTO ${this.table('document')} (
-           id, createuserid, claimid, filename, originalfilename, mimetype, sizebytes, sha256, storagepath,
+           createuserid, claimid, filename, originalfilename, mimetype, sizebytes, sha256, storagepath,
            archiveid, mappingversion, sourcefingerprint
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [documentId, this.options.writeUserId, input.ragClaimId, input.sourceName, input.sourceName, input.sourceMimeType, input.sourceSizeBytes, input.contentHash, input.sourceStoragePath, input.sourceArchiveId, input.mappingVersion, input.sourceFingerprint],
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        [this.options.writeUserId, input.ragClaimId, input.sourceName, input.sourceName, input.sourceMimeType, input.sourceSizeBytes, input.contentHash, input.sourceStoragePath, input.sourceArchiveId, input.mappingVersion, input.sourceFingerprint],
       );
+      const documentId = Number(inserted.rows[0]!.id);
 
       const pageIds = new Map<number, number>();
       for (const page of input.pages) {
-        const pageId = await this.allocate('documentpage', client);
-        await client.query(
-          `INSERT INTO ${this.table('documentpage')} (id, documentid, pagenumber, ocrtext, contenthash)
-           VALUES ($1,$2,$3,$4,$5)`,
-          [pageId, documentId, page.pageIndex, page.text, contentHash(page.text)],
+        const pageRow = await client.query<{ id: number | string }>(
+          `INSERT INTO ${this.table('documentpage')} (documentid, pagenumber, ocrtext, contenthash)
+           VALUES ($1,$2,$3,$4) RETURNING id`,
+          [documentId, page.pageIndex, page.text, contentHash(page.text)],
         );
-        pageIds.set(page.pageIndex, pageId);
+        pageIds.set(page.pageIndex, Number(pageRow.rows[0]!.id));
       }
 
       for (let position = 0; position < input.chunks.length; position += 1) {
@@ -282,14 +280,14 @@ export class PostgresRagStore implements RagStore {
         if (!chunk || !vector || !pageIds.has(chunk.pageStart)) {
           throw new ServiceError('Chunk refers to a missing rendered page', 'configuration', false);
         }
-        const chunkId = await this.allocate('documentchunk', client);
-        await client.query(
+        const chunkRow = await client.query<{ id: number | string }>(
           `INSERT INTO ${this.table('documentchunk')} (
-             id, createuserid, ingestionrunid, documentid, claimid, parsercode, chunkindex,
+             createuserid, ingestionrunid, documentid, claimid, parsercode, chunkindex,
              tokencount, charcount, contenttext, contentembedding
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::vector)`,
-          [chunkId, this.options.writeUserId, input.jobId, documentId, input.ragClaimId, OLLAMA_PARSER_CODE, chunk.index, tokenCount(chunk.content), chunk.content.length, chunk.content, vectorLiteral(vector)],
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector) RETURNING id`,
+          [this.options.writeUserId, input.jobId, documentId, input.ragClaimId, OLLAMA_PARSER_CODE, chunk.index, tokenCount(chunk.content), chunk.content.length, chunk.content, vectorLiteral(vector)],
         );
+        const chunkId = Number(chunkRow.rows[0]!.id);
         for (let page = chunk.pageStart; page <= chunk.pageEnd; page += 1) {
           const pageId = pageIds.get(page);
           if (pageId) {
@@ -369,14 +367,46 @@ export class PostgresRagStore implements RagStore {
     return result.rows.map((row) => ({ pageIndex: Number(row.pagenumber), text: row.ocrtext }));
   }
 
-  /** Surfaced for the health check so a missing claim is reported before ingest, not mid-batch. */
-  async claimExists(claimId: number): Promise<boolean> {
-    if (!Number.isSafeInteger(claimId) || claimId < 1) return false;
-    const result = await this.pool.query<{ exists: boolean }>(
-      `SELECT EXISTS (SELECT 1 FROM ${this.table('claim')} WHERE id = $1) AS exists`,
-      [claimId],
-    );
-    return result.rows[0]?.exists === true;
+  /**
+   * Maps a TALDAR entity to its rag.claim scope id, creating the row on first
+   * sight. The returned id is a surrogate: it is deliberately NOT the entity id,
+   * because entity ids are only unique within their own type and rag.claim.id is
+   * a single primary key shared by all four types.
+   */
+  async resolveScope(objectType: string, objectId: number, label: string): Promise<number> {
+    if (!objectType.trim()) throw new ServiceError('objectType is required', 'configuration', false);
+    if (!Number.isSafeInteger(objectId) || objectId < 1) throw new ServiceError('objectId must be a positive integer', 'configuration', false);
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Serialised against concurrent first-sights of the same entity; the
+      // partial unique index is the backstop if two workers still race.
+      await client.query('SELECT pg_advisory_xact_lock($1)', [SCOPE_LOCK]);
+      const existing = await client.query<{ id: number | string }>(
+        `SELECT id FROM ${this.table('claim')} WHERE objecttype = $1 AND objectid = $2`,
+        [objectType, objectId],
+      );
+      if (existing.rows[0]) {
+        await client.query('COMMIT');
+        return Number(existing.rows[0].id);
+      }
+
+      // claimnumber is NOT NULL, so it carries the record's display name from
+      // the UI rather than a fabricated claim number.
+      const created = await client.query<{ id: number | string }>(
+        `INSERT INTO ${this.table('claim')} (createuserid, claimnumber, objecttype, objectid)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [this.options.writeUserId, label.slice(0, 100) || `${objectType} ${objectId}`, objectType, objectId],
+      );
+      await client.query('COMMIT');
+      return Number(created.rows[0]!.id);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw databaseError(error, 'Could not resolve the RAG scope');
+    } finally {
+      client.release();
+    }
   }
 
   async close(): Promise<void> {
@@ -393,13 +423,16 @@ export class PostgresRagStore implements RagStore {
     documentId: number,
     completion: Parameters<RagStore['persistDocument']>[0]['completion'],
   ): Promise<void> {
+    // totaldurationms is GENERATED ALWAYS AS (completedat - startedat) and rejects
+    // a direct write, so completedat is set instead and the database derives it.
     await client.query(
       `UPDATE ${this.table('ingestionrun')}
-       SET statuscode = 'COMPLETED', documentid = $2, processingcompletedat = now(),
+       SET statuscode = 'COMPLETED', documentid = $2,
+           processingcompletedat = now(), completedat = now(),
            pagecount = $3, chunkcount = $4, parsedurationms = $5, embeddingdurationms = $6,
-           totaldurationms = $7, nextattemptat = NULL, errormessage = NULL
+           nextattemptat = NULL, errormessage = NULL
        WHERE id = $1`,
-      [jobId, documentId, completion.pageCount, completion.chunkCount, completion.parseDurationMs, completion.embedDurationMs, completion.totalDurationMs],
+      [jobId, documentId, completion.pageCount, completion.chunkCount, completion.parseDurationMs, completion.embedDurationMs],
     );
   }
 
@@ -427,33 +460,6 @@ export class PostgresRagStore implements RagStore {
     return quotePostgresRelation(RAG_SCHEMA, table);
   }
 
-  private async allocate(table: string, client?: PoolClient): Promise<number> {
-    const connection = client ?? await this.pool.connect();
-    const ownsConnection = !client;
-    try {
-      if (ownsConnection) await connection.query('BEGIN');
-      await connection.query('SELECT pg_advisory_xact_lock($1)', [ALLOCATOR_LOCK]);
-      const next = await connection.query<{ value: number | string }>(
-        `SELECT COALESCE(MAX(${quotePostgresIdentifier('id')}), 0) + 1 AS value FROM ${this.table(table)}`,
-      );
-      const value = Number(next.rows[0]?.value);
-      if (!Number.isSafeInteger(value) || value < 1) throw new ServiceError(`Cannot allocate ${table} ID`, 'database', false);
-      await connection.query(
-        `INSERT INTO ${this.table('rag_integer_allocator')} (allocator_name, next_value)
-         VALUES ($1, $2)
-         ON CONFLICT (allocator_name) DO UPDATE
-         SET next_value = GREATEST(${this.table('rag_integer_allocator')}.next_value, EXCLUDED.next_value)`,
-        [table, value + 1],
-      );
-      if (ownsConnection) await connection.query('COMMIT');
-      return value;
-    } catch (error) {
-      if (ownsConnection) await connection.query('ROLLBACK').catch(() => undefined);
-      throw error;
-    } finally {
-      if (ownsConnection) connection.release();
-    }
-  }
 }
 
 interface ChunkHitRow {

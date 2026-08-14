@@ -13,7 +13,7 @@ import { DI_CONFIG, findAi, findOcr } from './config/di.config';
 import { AnalysisResponse, Doc, Job, Toast } from './models/models';
 import { AuthService } from './services/auth.service';
 import { archiveToDoc, CustomerHit, CustomerService } from './services/customer.service';
-import { LocalHealth, LocalRagService } from './services/local-rag.service';
+import { LocalHealth, LocalRagService, RagScope } from './services/local-rag.service';
 import { OcrResult, OcrService } from './services/ocr.service';
 
 import { ChatDrawerComponent, RawOcrDrawerComponent, ToastsComponent } from './components/drawers';
@@ -122,6 +122,8 @@ export class App {
   // ---- Process context ----
   objectType = signal('Customer');
   objectId = signal('');
+  // The picked record's display name; becomes rag.claim.claimnumber on first ingest.
+  objectName = signal('');
 
   // ---- Documents / OCR jobs ---- (empty until real docs are loaded/uploaded)
   docs = signal<Doc[]>([]);
@@ -177,9 +179,9 @@ export class App {
     void this.refreshLocalHealth();
   }
 
-  /** Keeps the toggle honest about whether Postgres, Ollama and the record are all ready. */
+  /** Keeps the toggle honest about whether Postgres and Ollama are both ready. */
   private async refreshLocalHealth() {
-    this.localHealth.set(await this.localRag.health(Number(this.objectId()) || undefined));
+    this.localHealth.set(await this.localRag.health());
   }
 
   onModeChange(next: 'azure' | 'local') {
@@ -187,16 +189,19 @@ export class App {
     this.mode.set(next);
     if (next === 'local') {
       void this.refreshLocalHealth();
-      const claimMissing = this.localHealth()?.claimIdPresent === false;
-      this.addToast(
-        claimMissing
-          ? `${this.contextLabel()} has no matching rag.claim row — local ingest will be rejected`
-          : 'Local RAG: Ollama vision OCR into pgvector',
-        claimMissing ? 'error' : 'info',
-      );
+      this.addToast('Local RAG: Ollama vision OCR into pgvector', 'info');
     } else {
       this.addToast(`Cloud: ${this.ocrEngine().short}`, 'info');
     }
+  }
+
+  /** The record documents are scoped to; created in rag.claim on first ingest. */
+  private ragScope(): RagScope {
+    return {
+      objectType: DI_CONFIG.taldar.entityTables[this.objectType()] ?? this.objectType(),
+      objectId: Number(this.objectId()),
+      label: this.objectName() || this.contextLabel(),
+    };
   }
 
   private modelLabel(): string {
@@ -236,6 +241,7 @@ export class App {
     try {
       const rows = await this.customerService.documents(c.id, table);
       if (rows.length) console.log('gnr.archive row sample:', rows[0]);
+      this.objectName.set(c.name);
       this.docs.set(rows.map(archiveToDoc));
       this.jobs.set([]); // seed/previous OCR jobs belong to the old context
       this.llmSelected.set([]); // and so does the LLM selection pointing at them
@@ -353,7 +359,7 @@ export class App {
   /** The single point where the two OCR engines diverge. */
   private async runOcr(doc: Doc): Promise<OcrResult & { ragDocumentId?: number | null }> {
     const file = await this.resolveFile(doc);
-    if (this.mode() === 'local') return this.localRag.ingest(file, doc.archiveId!, Number(this.objectId()));
+    if (this.mode() === 'local') return this.localRag.ingest(file, doc.archiveId!, this.ragScope());
     return this.ocrService.recognize(file, this.ocrEngineId());
   }
 

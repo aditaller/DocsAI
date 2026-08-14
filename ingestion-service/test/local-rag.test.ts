@@ -76,6 +76,27 @@ test('ingestSource completes without reading SQL Server and returns per-page tex
   assert.equal(store.completed?.documentId, 99);
 });
 
+test('a failed run carries the real reason, not a generic message', async () => {
+  const store = new FakeRagStore();
+  store.createJob = async () => {
+    // What a missing rag.claim row actually raises inside createJob.
+    throw new ServiceError('Source claim 20 does not exist in rag.claim', 'source_not_found', false);
+  };
+
+  const result = await buildPipeline(store).ingestSource({
+    archiveId: 15095,
+    sourceClaimId: 20,
+    fileName: 'medicalfile4.jpg',
+    mimeType: 'image/jpeg',
+    bytes: PNG_HEADER,
+  });
+
+  assert.equal(result.outcome, 'failed');
+  assert.equal(result.error?.code, 'source_not_found');
+  assert.match(result.error?.message ?? '', /does not exist in rag\.claim/);
+  assert.equal(result.error?.retryable, false);
+});
+
 test('ingestSource reports the archive id when the run fails before a job exists', async () => {
   const store = new FakeRagStore();
   store.createJob = async () => {
@@ -90,7 +111,28 @@ test('ingestSource reports the archive id when the run fails before a job exists
     bytes: PNG_HEADER,
   });
 
-  assert.deepEqual(result, { archiveId: 7002, outcome: 'failed' });
+  assert.equal(result.archiveId, 7002);
+  assert.equal(result.outcome, 'failed');
+  assert.equal(result.error?.code, 'database');
+});
+
+test('the run is scoped by the resolved surrogate id, never the raw entity id', async () => {
+  const store = new FakeRagStore();
+  store.scopeId = 4242;
+  const scopeId = await store.resolveScope('bp.customer', 5000, 'Acme Ltd');
+
+  await buildPipeline(store).ingestSource({
+    archiveId: 15095,
+    sourceClaimId: scopeId,
+    fileName: 'medicalfile4.jpg',
+    mimeType: 'image/jpeg',
+    bytes: PNG_HEADER,
+  });
+
+  // Customer 5000 and claim 5000 must not land on the same rag.claim row, so the
+  // entity id must never reach createJob.
+  assert.deepEqual(store.createdWith, { archiveId: 15095, claimId: 4242 });
+  assert.deepEqual(store.scopeCalls, [{ objectType: 'bp.customer', objectId: 5000, label: 'Acme Ltd' }]);
 });
 
 test('searchChunks rejects a query vector of the wrong dimension before querying', async () => {
