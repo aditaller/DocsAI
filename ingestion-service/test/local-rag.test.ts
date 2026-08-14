@@ -231,15 +231,36 @@ function ocrClientReturning(body: unknown, capture?: Array<Record<string, unknow
 
 const RENDERED_PAGE = { pageIndex: 1, mimeType: 'image/png' as const, bytes: Buffer.from([137, 80, 78, 71]) };
 
-test('OCR disables thinking and sets the context, or the model answers nothing at all', async () => {
+test('OCR disables thinking, requests JSON, and sets the context', async () => {
   const calls: Array<Record<string, unknown>> = [];
-  const client = ocrClientReturning({ response: 'transcribed text', done_reason: 'stop' }, calls);
+  const client = ocrClientReturning({ response: '{"text":"transcribed text"}', done_reason: 'stop' }, calls);
 
   assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'transcribed text');
   // qwen3.6 spends its whole budget in the thinking channel otherwise, returning
   // an empty response with done_reason "length".
   assert.equal(calls[0]?.['think'], false);
+  assert.equal(calls[0]?.['format'], 'json');
   assert.deepEqual(calls[0]?.['options'], { num_ctx: 16_384 });
+});
+
+test('a JSON reply that breaks the contract still yields its text rather than nothing', async () => {
+  const cases: Array<[string, string, string]> = [
+    ['plain string, not JSON at all', 'County Hospital', 'County Hospital'],
+    ['the agreed shape', '{"text":"County Hospital"}', 'County Hospital'],
+    ['a different key', '{"transcription":"County Hospital"}', 'County Hospital'],
+    ['lines under the key', '{"text":["County Hospital","551 West Street"]}', 'County Hospital\n551 West Street'],
+    ['an unexpected key', '{"page":"County Hospital"}', 'County Hospital'],
+    ['a bare JSON string', '"County Hospital"', 'County Hospital'],
+  ];
+  for (const [label, response, expected] of cases) {
+    const client = ocrClientReturning({ response, done_reason: 'stop' });
+    assert.equal((await client.recognizePage(RENDERED_PAGE)).text, expected, label);
+  }
+
+  // Truncated mid-escape: keep the raw text, because a page indexed with stray
+  // JSON punctuation is recoverable and a dropped page is not.
+  const truncated = ocrClientReturning({ response: '{"text":"County Hospital\\n551 West', done_reason: 'length' });
+  assert.match((await truncated.recognizePage(RENDERED_PAGE)).text, /County Hospital/);
 });
 
 test('an empty OCR response is reported as a budget problem, not as a blank page', async () => {

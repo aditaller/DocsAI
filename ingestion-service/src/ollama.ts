@@ -51,7 +51,13 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       // otherwise spend its whole output budget in the thinking channel and
       // return an empty `response` with done_reason "length".
       think: false,
-      prompt: 'Transcribe all legible text in this document page. Preserve reading order. Return only the transcription; do not summarize or invent text.',
+      // Constrains the reply to valid JSON so no preamble ("Here is the text:")
+      // can leak into the indexed page. extractTranscription unwraps it, and
+      // falls back to the raw string if the model breaks the contract.
+      format: 'json',
+      prompt:
+        'Transcribe all legible text in this document page. Preserve reading order. Do not summarize or invent text. ' +
+        'Respond with a JSON object of the form {"text": "<the full transcription>"} and nothing else.',
       images: [page.bytes.toString('base64')],
       // Ollama defaults to a 4096-token context regardless of what the model
       // supports; image tokens plus a dense page overrun it easily.
@@ -60,11 +66,12 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     if (typeof body.response !== 'string') {
       throw new ServiceError('Ollama OCR response has no transcription', 'ollama', true);
     }
-    const text = normalizeOcr(body.response);
+    const text = normalizeOcr(extractTranscription(body.response));
     if (!text) {
       throw new ServiceError(
         `Ollama returned no text for page ${page.pageIndex} (done_reason=${String(body.done_reason)}, tokens=${String(body.eval_count)}). ` +
-          'A page that truly has no text aside, this usually means the output budget was exhausted — raise OLLAMA_NUM_CTX.',
+          'A page that truly has no text aside, this usually means the output budget was exhausted — raise OLLAMA_NUM_CTX. ' +
+          'JSON mode can also stall some vision models; drop `format` from recognizePage to rule that out.',
         'ollama',
         false,
       );
@@ -149,6 +156,43 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     }
   }
 
+}
+
+/**
+ * Unwraps the transcription from a JSON-mode reply.
+ *
+ * The contract asked for is `{"text": "..."}`, but a model can return a bare
+ * string, a different key, or JSON truncated mid-escape. Anything unrecognised
+ * falls through to the raw response: a page indexed with a little JSON syntax
+ * around it is recoverable, a page silently dropped is not.
+ */
+export function extractTranscription(raw: string): string {
+  const trimmed = raw.trim();
+  // A bare JSON string is a legal reply in JSON mode. Parsing text that merely
+  // begins with a quote is safe: it either unwraps cleanly or falls through.
+  if (!/^[{["]/.test(trimmed)) return raw;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return raw; // truncated or malformed — keep what the model did produce
+  }
+  if (typeof parsed === 'string') return parsed;
+  if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string').join('\n');
+  if (!parsed || typeof parsed !== 'object') return raw;
+
+  const object = parsed as Record<string, unknown>;
+  for (const key of ['text', 'transcription', 'content', 'page_text']) {
+    const value = object[key];
+    if (typeof value === 'string' && value.trim()) return value;
+    // Some models answer with a list of lines under the same key.
+    if (Array.isArray(value)) {
+      const lines = value.filter((item): item is string => typeof item === 'string');
+      if (lines.length) return lines.join('\n');
+    }
+  }
+  const strings = Object.values(object).filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  return strings.length ? strings.join('\n') : raw;
 }
 
 /** Keeps text stable for hashing/chunking without rewriting its transcription. */
