@@ -89,11 +89,15 @@ export class IngestionPipeline {
    * from the archive route), so SQL Server is never touched. Everything after
    * the load — idempotence, run states, retry classification — is shared.
    */
-  async ingestSource(source: SourceFile): Promise<IngestionResult> {
-    return this.run(source.archiveId, async () => source);
+  async ingestSource(source: SourceFile, options: { retryTerminal?: boolean } = {}): Promise<IngestionResult> {
+    return this.run(source.archiveId, async () => source, options);
   }
 
-  private async run(archiveId: number, load: () => Promise<SourceFile>): Promise<IngestionResult> {
+  private async run(
+    archiveId: number,
+    load: () => Promise<SourceFile>,
+    options: { retryTerminal?: boolean } = {},
+  ): Promise<IngestionResult> {
     let jobId: number | undefined;
     let attempts = 0;
     try {
@@ -103,7 +107,7 @@ export class IngestionPipeline {
       const sourceFingerprint = source.sourceRevision ? `source:${source.sourceRevision}` : `content:${sourceHash}`;
       const job = await this.dependencies.ragStore.createJob(source.archiveId, source.sourceClaimId, this.dependencies.mappingVersion, sourceFingerprint, sourceHash);
       jobId = job.id;
-      const claimed = await this.dependencies.ragStore.claimJob(job.id);
+      const claimed = await this.dependencies.ragStore.claimJob(job.id, options.retryTerminal === true);
       attempts = claimed.attempts;
       if (!claimed.claimed) {
         this.dependencies.logger.info('ingestion_skipped', {

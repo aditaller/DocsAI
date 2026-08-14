@@ -76,6 +76,23 @@ test('ingestSource completes without reading SQL Server and returns per-page tex
   assert.equal(store.completed?.documentId, 99);
 });
 
+test('an interactive re-submit may reclaim a terminally failed run; the batch path may not', async () => {
+  const interactive = new FakeRagStore();
+  await buildPipeline(interactive).ingestSource(
+    { archiveId: 15095, sourceClaimId: 2, fileName: 'medicalfile4.jpg', mimeType: 'image/jpeg', bytes: PNG_HEADER },
+    { retryTerminal: true },
+  );
+  assert.equal(interactive.claimedWithFailed, true);
+
+  // Without the option the run row would stay FAILED forever and the document
+  // could never be retried through the UI.
+  const batch = new FakeRagStore();
+  await buildPipeline(batch).ingestSource(
+    { archiveId: 15095, sourceClaimId: 2, fileName: 'medicalfile4.jpg', mimeType: 'image/jpeg', bytes: PNG_HEADER },
+  );
+  assert.equal(batch.claimedWithFailed, false);
+});
+
 test('a failed run carries the real reason, not a generic message', async () => {
   const store = new FakeRagStore();
   store.createJob = async () => {
@@ -163,6 +180,7 @@ test('chat posts to /api/chat and returns the message content', async () => {
     embeddingModel: 'embed',
     dimensions: 3,
     chatModel: 'chat-model',
+    numContext: 16_384,
     fetchImplementation: (async (input: URL | RequestInfo, init?: RequestInit) => {
       calls.push({ url: String(input), body: JSON.parse(String(init?.body)) });
       return new Response(JSON.stringify({ message: { content: '  the answer  ' } }), {
@@ -181,6 +199,7 @@ test('chat posts to /api/chat and returns the message content', async () => {
       { role: 'system', content: 'system text' },
       { role: 'user', content: 'user text' },
     ],
+    options: { num_ctx: 16_384 },
   });
 });
 
@@ -190,6 +209,63 @@ test('chat refuses to run when no chat model is configured', async () => {
     ocrModel: 'vision',
     embeddingModel: 'embed',
     dimensions: 3,
+    numContext: 16_384,
   });
   await assert.rejects(() => client.chat('system', 'user'), /OLLAMA_CHAT_MODEL/);
+});
+
+/** Builds a client whose fetch returns one canned /api/generate body. */
+function ocrClientReturning(body: unknown, capture?: Array<Record<string, unknown>>): OllamaClient {
+  return new OllamaClient({
+    baseUrl: new URL('http://127.0.0.1:11434'),
+    ocrModel: 'vision',
+    embeddingModel: 'embed',
+    dimensions: 3,
+    numContext: 16_384,
+    fetchImplementation: (async (_input: URL | RequestInfo, init?: RequestInit) => {
+      capture?.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch,
+  });
+}
+
+const RENDERED_PAGE = { pageIndex: 1, mimeType: 'image/png' as const, bytes: Buffer.from([137, 80, 78, 71]) };
+
+test('OCR disables thinking and sets the context, or the model answers nothing at all', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const client = ocrClientReturning({ response: 'transcribed text', done_reason: 'stop' }, calls);
+
+  assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'transcribed text');
+  // qwen3.6 spends its whole budget in the thinking channel otherwise, returning
+  // an empty response with done_reason "length".
+  assert.equal(calls[0]?.['think'], false);
+  assert.deepEqual(calls[0]?.['options'], { num_ctx: 16_384 });
+});
+
+test('an empty OCR response is reported as a budget problem, not as a blank page', async () => {
+  const client = ocrClientReturning({ response: '', done_reason: 'length', eval_count: 3337 });
+  await assert.rejects(
+    () => client.recognizePage(RENDERED_PAGE),
+    (error: Error) => /done_reason=length/.test(error.message) && /OLLAMA_NUM_CTX/.test(error.message),
+  );
+});
+
+test('a truncated page is surfaced to the caller but still returned', async () => {
+  const truncated: number[] = [];
+  const client = new OllamaClient({
+    baseUrl: new URL('http://127.0.0.1:11434'),
+    ocrModel: 'vision',
+    embeddingModel: 'embed',
+    dimensions: 3,
+    numContext: 16_384,
+    onTruncated: (pageIndex) => truncated.push(pageIndex),
+    fetchImplementation: (async () =>
+      new Response(JSON.stringify({ response: 'half a page', done_reason: 'length' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch,
+  });
+
+  assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'half a page');
+  assert.deepEqual(truncated, [1]);
 });

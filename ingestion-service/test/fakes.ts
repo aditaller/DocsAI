@@ -84,7 +84,10 @@ export class FakeRagStore implements RagStore {
     return { id: 1, ragClaimId: 5, state: 'PENDING', attempts: 0, claimed: false };
   }
 
-  async claimJob(_jobId: number): Promise<JobRecord> {
+  claimedWithFailed?: boolean;
+
+  async claimJob(_jobId: number, includeFailed = false): Promise<JobRecord> {
+    this.claimedWithFailed = includeFailed;
     return { id: 1, ragClaimId: 5, state: 'PARSING', attempts: 1, claimed: true };
   }
 

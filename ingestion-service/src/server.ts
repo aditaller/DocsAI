@@ -43,6 +43,8 @@ async function main(): Promise<void> {
     embeddingModel: config.ollama.embeddingModel,
     dimensions: config.embeddingDimensions,
     chatModel: config.ollama.chatModel,
+    numContext: config.ollama.numContext,
+    onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
   });
   // No archiveReader: every route here supplies its own bytes, so this process
   // never opens a SQL Server connection and does not need one configured.
@@ -123,6 +125,10 @@ async function main(): Promise<void> {
       fileName,
       mimeType: request.headers['content-type'] ?? 'application/octet-stream',
       bytes,
+    }, {
+      // Someone re-submitting a document through the UI is asking for a retry;
+      // otherwise one terminal failure would lock that archive id out for good.
+      retryTerminal: true,
     });
 
     if (result.outcome === 'failed' || result.outcome === 'retry_wait') {

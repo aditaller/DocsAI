@@ -70,7 +70,7 @@ export interface RagStore {
   preflight(): Promise<void>;
   listDueRetryArchiveIds(limit: number): Promise<number[]>;
   createJob(sourceArchiveId: number, sourceClaimId: number, mappingVersion: string, sourceFingerprint: string, sourceHash: string): Promise<JobRecord>;
-  claimJob(jobId: number): Promise<JobRecord>;
+  claimJob(jobId: number, includeFailed?: boolean): Promise<JobRecord>;
   markChunking(jobId: number, pageCount: number, markdownFullText: string, parseDurationMs: number): Promise<void>;
   markEmbedding(jobId: number, chunkCount: number): Promise<void>;
   persistDocument(input: {
@@ -198,16 +198,24 @@ export class PostgresRagStore implements RagStore {
     }
   }
 
-  async claimJob(jobId: number): Promise<JobRecord> {
+  /**
+   * `includeFailed` lets a terminal FAILED run be picked up again. The batch
+   * worker leaves those alone by design, but without this an interactive
+   * re-submit is refused forever: the run row survives, so the operator can
+   * never retry the same document even after the cause is fixed. COMPLETED is
+   * never reclaimed — that is the idempotence guarantee.
+   */
+  async claimJob(jobId: number, includeFailed = false): Promise<JobRecord> {
+    const claimable = includeFailed ? ['PENDING', 'RETRY_WAIT', 'FAILED'] : ['PENDING', 'RETRY_WAIT'];
     const result = await this.pool.query<JobRow>(
       `UPDATE ${this.table('ingestionrun')}
        SET statuscode = 'PARSING', attempts = attempts + 1,
            processingstartedat = now(), startedat = now(),
            errormessage = NULL
-       WHERE id = $1 AND statuscode IN ('PENDING', 'RETRY_WAIT')
+       WHERE id = $1 AND statuscode = ANY($2::text[])
          AND (nextattemptat IS NULL OR nextattemptat <= now())
        RETURNING id, claimid AS ragclaimid, documentid, statuscode AS state, attempts, nextattemptat`,
-      [jobId],
+      [jobId, claimable],
     );
     if (result.rows[0]) return toJob(result.rows[0], true);
     const current = await this.pool.query<JobRow>(

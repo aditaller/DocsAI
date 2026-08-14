@@ -3,6 +3,8 @@ import type { RenderedPage, TextPage } from './types.js';
 
 interface OllamaGenerateResponse {
   response?: unknown;
+  done_reason?: unknown;
+  eval_count?: unknown;
 }
 
 interface OllamaEmbedResponse {
@@ -11,6 +13,7 @@ interface OllamaEmbedResponse {
 
 interface OllamaChatResponse {
   message?: { content?: unknown };
+  done_reason?: unknown;
 }
 
 export interface OcrEmbedder {
@@ -33,6 +36,9 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       // Optional so the batch CLI, which never completes text, needs no extra
       // environment. The HTTP server refuses to start without it.
       chatModel?: string;
+      numContext: number;
+      /** Called when a page came back truncated, so the run can say so. */
+      onTruncated?: (pageIndex: number) => void;
       fetchImplementation?: typeof fetch;
     },
   ) {}
@@ -41,13 +47,34 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     const body = await this.post<OllamaGenerateResponse>('/api/generate', {
       model: this.options.ocrModel,
       stream: false,
+      // Transcription needs no reasoning, and a thinking-capable model will
+      // otherwise spend its whole output budget in the thinking channel and
+      // return an empty `response` with done_reason "length".
+      think: false,
       prompt: 'Transcribe all legible text in this document page. Preserve reading order. Return only the transcription; do not summarize or invent text.',
       images: [page.bytes.toString('base64')],
+      // Ollama defaults to a 4096-token context regardless of what the model
+      // supports; image tokens plus a dense page overrun it easily.
+      options: { num_ctx: this.options.numContext },
     });
     if (typeof body.response !== 'string') {
       throw new ServiceError('Ollama OCR response has no transcription', 'ollama', true);
     }
-    return { pageIndex: page.pageIndex, text: normalizeOcr(body.response) };
+    const text = normalizeOcr(body.response);
+    if (!text) {
+      throw new ServiceError(
+        `Ollama returned no text for page ${page.pageIndex} (done_reason=${String(body.done_reason)}, tokens=${String(body.eval_count)}). ` +
+          'A page that truly has no text aside, this usually means the output budget was exhausted — raise OLLAMA_NUM_CTX.',
+        'ollama',
+        false,
+      );
+    }
+    // Truncation still yields usable text, so this is a warning the caller can
+    // see rather than a failure, but it means the page is incomplete.
+    if (body.done_reason === 'length') {
+      this.options.onTruncated?.(page.pageIndex);
+    }
+    return { pageIndex: page.pageIndex, text };
   }
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -83,10 +110,18 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
         { role: 'system', content: systemMessage },
         { role: 'user', content: userMessage },
       ],
+      // Retrieved chunks make this prompt large; the 4096-token default would
+      // truncate the context before the model ever saw the last excerpt.
+      options: { num_ctx: this.options.numContext },
     });
     const content = body.message?.content;
     if (typeof content !== 'string' || !content.trim()) {
-      throw new ServiceError('Ollama chat response has no content', 'ollama', true);
+      throw new ServiceError(
+        `Ollama chat returned no content (done_reason=${String(body.done_reason)}). ` +
+          'A thinking model can exhaust its output budget before answering — raise OLLAMA_NUM_CTX.',
+        'ollama',
+        false,
+      );
     }
     return content.trim();
   }

@@ -138,7 +138,13 @@ foreign key mid-batch.
 - PDF rendering uses the locally installed `pdftoppm`; Office formats are
   intentionally unsupported.
 - OCR quality is determined by the selected local vision model. There is no
-  remote fallback and no hosted endpoint.
+  remote fallback and no hosted endpoint. A vision model will also invent text
+  for a blank or near-blank page rather than returning nothing.
+- Thinking-capable models (qwen3.6 among them) must not think during OCR: at
+  Ollama's default 4096-token context they spend the entire output budget
+  reasoning and return an empty transcription with `done_reason: "length"`. OCR
+  requests therefore send `think: false`, and `OLLAMA_NUM_CTX` raises the window
+  for both OCR and retrieval prompts.
 - The source mapping must be validated against the deployed SQL Server schema;
   the example names (`objectid`, `filename`, `fullpath`) are frontend
   conventions, not a production contract.
