@@ -137,9 +137,18 @@ foreign key mid-batch.
 
 - PDF rendering uses the locally installed `pdftoppm`; Office formats are
   intentionally unsupported.
+- **Hebrew is not supported by the local vision models tested.** Measured against
+  Azure Document Intelligence output for the same scan, `qwen3.6:35b-a3b` reached
+  18% word recall and `qwen3-vl:4b` 4% (the latter degenerating into a repetition
+  loop). Both produce fluent-looking Hebrew that is largely invented. Route Hebrew
+  documents to the Azure path; the local path is for Latin-script documents.
 - OCR quality is determined by the selected local vision model. There is no
   remote fallback and no hosted endpoint. A vision model will also invent text
   for a blank or near-blank page rather than returning nothing.
+- Model size is a poor predictor of speed here. `qwen3.6:35b-a3b` needs 23 GB and
+  runs 42% on the CPU of a 16 GB card, yet is roughly four times faster than the
+  3.3 GB `qwen3-vl:4b` that fits entirely in VRAM, because it is a Mixture-of-
+  Experts with far fewer active parameters. Measure before assuming.
 - Thinking-capable models (qwen3.6 among them) must not think during OCR: at
   Ollama's default 4096-token context they spend the entire output budget
   reasoning and return an empty transcription with `done_reason: "length"`. OCR
