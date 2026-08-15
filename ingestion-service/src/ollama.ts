@@ -36,9 +36,8 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       // Optional so the batch CLI, which never completes text, needs no extra
       // environment. The HTTP server refuses to start without it.
       chatModel?: string;
+      /** Applies to chat only: retrieved chunks overrun Ollama's 4096 default. */
       numContext: number;
-      /** Send `format: "json"` on OCR calls. Not every vision model survives it. */
-      ocrJsonFormat?: boolean;
       /** Called when a page came back truncated, so the run can say so. */
       onTruncated?: (pageIndex: number) => void;
       fetchImplementation?: typeof fetch;
@@ -46,25 +45,18 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
   ) {}
 
   async recognizePage(page: RenderedPage): Promise<TextPage> {
+    // This payload is deliberately minimal and matches a request verified by
+    // hand against qwen3-vl:4b (~5s for a full page). Adding `think: false` or
+    // an explicit `options.num_ctx` to it made the same model spend its whole
+    // budget and return an empty body, so neither is sent here. `format: json`
+    // is what keeps the reply terse: the grammar leaves no room for a preamble
+    // or a reasoning monologue.
     const body = await this.post<OllamaGenerateResponse>('/api/generate', {
       model: this.options.ocrModel,
-      stream: false,
-      // Transcription needs no reasoning, and a thinking-capable model will
-      // otherwise spend its whole output budget in the thinking channel and
-      // return an empty `response` with done_reason "length".
-      think: false,
-      // Grammar-constrained JSON. Opt-in, because qwen3-vl:4b answers with a
-      // full response worth of tokens and an empty body under it. The prompt
-      // below asks for the same shape regardless, and extractTranscription
-      // unwraps whatever arrives, so this only adds the hard constraint.
-      ...(this.options.ocrJsonFormat ? { format: 'json' } : {}),
-      prompt:
-        'Transcribe all legible text in this document page. Preserve reading order. Do not summarize or invent text. ' +
-        'Respond with a JSON object of the form {"text": "<the full transcription>"} and nothing else.',
+      prompt: 'extract all data',
       images: [page.bytes.toString('base64')],
-      // Ollama defaults to a 4096-token context regardless of what the model
-      // supports; image tokens plus a dense page overrun it easily.
-      options: { num_ctx: this.options.numContext },
+      format: 'json',
+      stream: false,
     });
     if (typeof body.response !== 'string') {
       throw new ServiceError('Ollama OCR response has no transcription', 'ollama', true);
@@ -162,12 +154,17 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
 }
 
 /**
- * Unwraps the transcription from a JSON-mode reply.
+ * Turns a JSON-mode reply into the plain text that gets chunked and embedded.
  *
- * The contract asked for is `{"text": "..."}`, but a model can return a bare
- * string, a different key, or JSON truncated mid-escape. Anything unrecognised
- * falls through to the raw response: a page indexed with a little JSON syntax
- * around it is recoverable, a page silently dropped is not.
+ * "extract all data" returns whatever shape the model considers natural — a
+ * flat object for one page, nested objects and arrays for an invoice or a
+ * table. Every leaf is flattened to a `key: value` line so nothing is dropped
+ * before embedding; a value buried three levels down is exactly the sort of
+ * thing a later question will ask about.
+ *
+ * A reply that is not JSON at all (truncated mid-escape, or plain prose) is
+ * returned untouched. A page carrying stray punctuation is recoverable; a page
+ * silently discarded is not.
  */
 export function extractTranscription(raw: string): string {
   const trimmed = raw.trim();
@@ -180,22 +177,22 @@ export function extractTranscription(raw: string): string {
   } catch {
     return raw; // truncated or malformed — keep what the model did produce
   }
-  if (typeof parsed === 'string') return parsed;
-  if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string').join('\n');
-  if (!parsed || typeof parsed !== 'object') return raw;
 
-  const object = parsed as Record<string, unknown>;
-  for (const key of ['text', 'transcription', 'content', 'page_text']) {
-    const value = object[key];
-    if (typeof value === 'string' && value.trim()) return value;
-    // Some models answer with a list of lines under the same key.
+  const lines: string[] = [];
+  const walk = (value: unknown, label: string): void => {
+    if (value === null || value === undefined || value === '') return;
     if (Array.isArray(value)) {
-      const lines = value.filter((item): item is string => typeof item === 'string');
-      if (lines.length) return lines.join('\n');
+      value.forEach((item, index) => walk(item, label ? `${label} ${index + 1}` : String(index + 1)));
+    } else if (typeof value === 'object') {
+      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        walk(child, label ? `${label} ${key}` : key);
+      }
+    } else {
+      lines.push(label ? `${label}: ${value}` : String(value));
     }
-  }
-  const strings = Object.values(object).filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  return strings.length ? strings.join('\n') : raw;
+  };
+  walk(parsed, '');
+  return lines.length ? lines.join('\n') : raw;
 }
 
 /** Keeps text stable for hashing/chunking without rewriting its transcription. */

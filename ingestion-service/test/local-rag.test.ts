@@ -231,49 +231,38 @@ function ocrClientReturning(body: unknown, capture?: Array<Record<string, unknow
 
 const RENDERED_PAGE = { pageIndex: 1, mimeType: 'image/png' as const, bytes: Buffer.from([137, 80, 78, 71]) };
 
-test('OCR disables thinking and sets the context, and omits format by default', async () => {
+test('the OCR request carries nothing beyond the payload verified by hand', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const client = ocrClientReturning({ response: '{"text":"transcribed text"}', done_reason: 'stop' }, calls);
 
-  assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'transcribed text');
-  // qwen3.6 spends its whole budget in the thinking channel otherwise, returning
-  // an empty response with done_reason "length".
-  assert.equal(calls[0]?.['think'], false);
-  assert.deepEqual(calls[0]?.['options'], { num_ctx: 16_384 });
-  // Grammar-constrained JSON is opt-in: it empties the response on qwen3-vl:4b.
-  assert.ok(!('format' in (calls[0] ?? {})), 'format must not be sent unless enabled');
+  assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'text: transcribed text');
+  const sent = calls[0] ?? {};
+  assert.deepEqual(Object.keys(sent).sort(), ['format', 'images', 'model', 'prompt', 'stream']);
+  assert.equal(sent['format'], 'json');
+  assert.equal(sent['prompt'], 'extract all data');
+  assert.equal(sent['stream'], false);
+  // Adding either of these made qwen3-vl:4b return an empty body; the request
+  // must stay exactly as verified.
+  assert.ok(!('think' in sent), 'think must not be sent');
+  assert.ok(!('options' in sent), 'options must not be sent');
 });
 
-test('OCR sends format json only when it is switched on', async () => {
-  const calls: Array<Record<string, unknown>> = [];
-  const client = new OllamaClient({
-    baseUrl: new URL('http://127.0.0.1:11434'),
-    ocrModel: 'vision',
-    embeddingModel: 'embed',
-    dimensions: 3,
-    numContext: 16_384,
-    ocrJsonFormat: true,
-    fetchImplementation: (async (_input: URL | RequestInfo, init?: RequestInit) => {
-      calls.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ response: '{"text":"ok"}', done_reason: 'stop' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch,
-  });
-
-  assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'ok');
-  assert.equal(calls[0]?.['format'], 'json');
-});
-
-test('a JSON reply that breaks the contract still yields its text rather than nothing', async () => {
+test('every value in a JSON reply reaches the indexed text', async () => {
   const cases: Array<[string, string, string]> = [
-    ['plain string, not JSON at all', 'County Hospital', 'County Hospital'],
-    ['the agreed shape', '{"text":"County Hospital"}', 'County Hospital'],
-    ['a different key', '{"transcription":"County Hospital"}', 'County Hospital'],
-    ['lines under the key', '{"text":["County Hospital","551 West Street"]}', 'County Hospital\n551 West Street'],
-    ['an unexpected key', '{"page":"County Hospital"}', 'County Hospital'],
+    ['plain text, not JSON', 'County Hospital', 'County Hospital'],
     ['a bare JSON string', '"County Hospital"', 'County Hospital'],
+    ['a flat object', '{"hospital":"County","total":"$500"}', 'hospital: County\ntotal: $500'],
+    [
+      'nested objects, as an invoice returns',
+      '{"patient":{"name":"Apple Song","phone":"080 789 67 56"}}',
+      'patient name: Apple Song\npatient phone: 080 789 67 56',
+    ],
+    [
+      'arrays of line items',
+      '{"items":[{"desc":"Full Check Up","price":"$700"},{"desc":"Vaccine","price":"$3 450"}]}',
+      'items 1 desc: Full Check Up\nitems 1 price: $700\nitems 2 desc: Vaccine\nitems 2 price: $3 450',
+    ],
+    ['empty values are skipped', '{"a":"keep","b":"","c":null}', 'a: keep'],
   ];
   for (const [label, response, expected] of cases) {
     const client = ocrClientReturning({ response, done_reason: 'stop' });
