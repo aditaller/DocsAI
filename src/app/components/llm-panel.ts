@@ -80,6 +80,9 @@ import { IconComponent } from './shared';
           </div>
           <div class="spacer"></div>
           <span class="save-note">Saved &amp; linked to <b>{{ contextLabel() }}</b></span>
+          @if (canChat()) {
+            <button class="act-btn primary" (click)="chat.emit()"><di-icon name="chat" [size]="15" /> Chat on Documents</button>
+          }
           <button class="btn-analyze" (click)="analyze.emit()" [disabled]="!canAnalyze()">
             <di-icon name="sparkles" [size]="16" />
             {{ analyzing() ? 'Analyzing…' : 'Analyze with AI' }}
@@ -105,11 +108,14 @@ export class LlmPanelComponent {
   templateChange = output<string>();
   aiModelChange = output<string>();
   analyze = output<void>();
+  chat = output<void>();
 
   readonly templateEntries = Object.entries(TEMPLATES);
   readonly aiModels = DI_CONFIG.ai.models;
 
   canAnalyze = computed(() => this.llmSelected().length > 0 && this.prompt().trim().length > 0 && !this.analyzing());
+  /** Chat only answers from indexed chunks, so it appears once a document has RAG data. */
+  canChat = computed(() => this.jobs().some((j) => j.ragDocumentId != null));
 
   ftColor(type: string) {
     return { pdf: 'var(--ft-pdf)', word: 'var(--ft-word)', image: 'var(--ft-image)' }[type] ?? 'var(--ft-pdf)';
@@ -190,7 +196,9 @@ export class LlmPanelComponent {
             </button>
             <button class="act-btn" (click)="rerun.emit()"><di-icon name="rerun" [size]="15" /> Re-run with New Prompt</button>
             <div class="grow"></div>
-            <button class="act-btn primary" (click)="chat.emit()"><di-icon name="chat" [size]="15" /> Start Chat on These Docs</button>
+            @if (canChat()) {
+              <button class="act-btn primary" (click)="chat.emit()"><di-icon name="chat" [size]="15" /> Chat on Documents</button>
+            }
           </div>
         </div>
       }
@@ -200,6 +208,7 @@ export class LlmPanelComponent {
 export class ResponseCardComponent {
   response = input.required<AnalysisResponse | null>();
   analyzing = input.required<boolean>();
+  canChat = input(false);
 
   exportPdf = output<void>();
   save = output<void>();

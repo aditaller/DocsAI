@@ -93,11 +93,13 @@ import { TopBarComponent } from './components/top-bar';
             (templateChange)="onTemplateChange($event)"
             (aiModelChange)="aiModelId.set($event)"
             (analyze)="onAnalyze()"
+            (chat)="chatOpen.set(true)"
             (archiveFile)="onArchiveDoc($event)"
           />
           <di-response-card
             [response]="response()"
             [analyzing]="analyzing()"
+            [canChat]="canChat()"
             (exportPdf)="onExport()"
             (save)="onSave()"
             (rerun)="onRerun()"
@@ -113,7 +115,7 @@ import { TopBarComponent } from './components/top-bar';
         (close)="previewDoc.set(null)"
       />
       <di-raw-ocr-drawer [job]="rawJob()" [ocrModelId]="ocrEngine().modelId" (close)="rawJob.set(null)" />
-      <di-chat-drawer [open]="chatOpen()" [docNames]="chatDocs()" (close)="chatOpen.set(false)" />
+      <di-chat-drawer [open]="chatOpen()" [docNames]="chatDocs()" [ask]="askDocs" (close)="chatOpen.set(false)" />
       <di-toasts [toasts]="toasts()" />
     </div>
     }
@@ -167,7 +169,25 @@ export class App {
     const d = this.previewDoc();
     return d ? !!this.docs().find((x) => x.id === d.id && x.selected) : false;
   });
-  chatDocs = computed(() => (this.response() ? this.response()!.docNames : this.completedJobs().map((j) => j.name)));
+  // The docs the chat drawer answers over: the ones an analysis ran on, else everything OCR'd.
+  chatJobs = computed(() => {
+    const r = this.response();
+    const done = this.completedJobs();
+    return r ? done.filter((j) => r.docNames.includes(j.name)) : done;
+  });
+  chatDocs = computed(() => this.chatJobs().map((j) => j.name));
+  canChat = computed(() => this.chatJobs().some((j) => j.ragDocumentId != null));
+
+  /** Bound so the drawer can hold it as a plain input; routes questions through the active engine. */
+  askDocs = async (question: string): Promise<string> => {
+    const sel = this.chatJobs();
+    if (!sel.length) return 'No OCR-completed documents are in context yet.';
+    if (this.mode() === 'local') {
+      if (!sel.some((j) => j.ragDocumentId)) return 'These documents were not indexed locally — re-run OCR in local mode first.';
+      return this.analyzeLocal(sel, question);
+    }
+    return this.analyzeCloud(sel, performance.now(), question);
+  };
 
   constructor(
     private ocrService: OcrService,
@@ -529,12 +549,12 @@ export class App {
   }
 
   /** Cloud path: the whole OCR text of every selected doc goes to the hosted model. */
-  private async analyzeCloud(sel: Job[], startedAt: number): Promise<string> {
+  private async analyzeCloud(sel: Job[], startedAt: number, instruction = this.prompt()): Promise<string> {
     // OCR text of the selected docs (strip the seed markup); prompt is the instruction.
     const userMessage = sel
       .map((j) => `# ${j.name}\n${(j.raw?.lines ?? []).map((l) => (Array.isArray(l) ? l.join(': ') : l)).join('\n').replace(/<[^>]+>/g, '')}`)
       .join('\n\n');
-    const body = JSON.stringify({ userMessage, systemMessage: this.prompt(), enableWebSearch: false });
+    const body = JSON.stringify({ userMessage, systemMessage: instruction, enableWebSearch: false });
     const res = await fetch(DI_CONFIG.ai.chatEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -561,9 +581,9 @@ export class App {
    * PDF costs the same context as a short one. Citations are appended so every
    * claim in the answer can be traced back to a page.
    */
-  private async analyzeLocal(sel: Job[]): Promise<string> {
+  private async analyzeLocal(sel: Job[], instruction = this.prompt()): Promise<string> {
     const ids = sel.map((j) => j.ragDocumentId).filter((id): id is number => typeof id === 'number');
-    const result = await this.localRag.chat(this.prompt(), ids);
+    const result = await this.localRag.chat(instruction, ids);
     console.log(`local chat: ${ids.length} doc(s), ${result.citations.length} chunk(s), server ${result.elapsedTimeMs}ms`);
     if (!result.citations.length) return result.reply;
 

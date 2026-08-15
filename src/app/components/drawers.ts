@@ -108,16 +108,23 @@ interface ChatMsg {
               <div class="chat-bubble">{{ m.text }}</div>
             </div>
           }
+          @if (pending()) {
+            <div class="chat-msg ai">
+              <div class="chat-av ai"><di-icon name="sparkles" [size]="15" /></div>
+              <div class="chat-bubble">Searching the documents…</div>
+            </div>
+          }
         </div>
       </div>
       <div class="chat-input-bar">
         <input
           [value]="input()"
+          [disabled]="pending()"
           (input)="input.set($any($event.target).value)"
           (keydown.enter)="send()"
           placeholder="Ask about these documents…"
         />
-        <button class="chat-send" (click)="send()" aria-label="Send"><di-icon name="send" [size]="17" /></button>
+        <button class="chat-send" [disabled]="pending()" (click)="send()" aria-label="Send"><di-icon name="send" [size]="17" /></button>
       </div>
     </div>
   `,
@@ -125,14 +132,14 @@ interface ChatMsg {
 export class ChatDrawerComponent {
   open = input.required<boolean>();
   docNames = input.required<string[]>();
+  /** Answers a question over the documents in context — the same retrieval the Analyze button uses. */
+  ask = input.required<(question: string) => Promise<string>>();
   close = output<void>();
 
   msgs = signal<ChatMsg[]>([]);
   input = signal('');
+  pending = signal(false);
   private body = viewChild<ElementRef<HTMLElement>>('body');
-
-  private readonly cannedReply =
-    'Based on the FNOL, the loss occurred on 2026-05-28 and was reported on 2026-06-02 — a 5-day gap that exceeds the 72-hour notification window. The estimated damage is $14,250 against a $1,000 deductible.';
 
   constructor() {
     effect(() => {
@@ -141,6 +148,7 @@ export class ChatDrawerComponent {
           { who: 'ai', text: "I've loaded the selected documents into context. Ask me anything about this claim — dates, amounts, parties, or inconsistencies." },
         ]);
         this.input.set('');
+        this.pending.set(false);
       }
     });
     effect(() => {
@@ -150,12 +158,20 @@ export class ChatDrawerComponent {
     });
   }
 
-  send() {
+  async send() {
     const q = this.input().trim();
-    if (!q) return;
+    if (!q || this.pending()) return;
     this.msgs.update((m) => [...m, { who: 'user', text: q }]);
     this.input.set('');
-    setTimeout(() => this.msgs.update((m) => [...m, { who: 'ai', text: this.cannedReply }]), 650);
+    this.pending.set(true);
+    try {
+      const reply = await this.ask()(q);
+      this.msgs.update((m) => [...m, { who: 'ai', text: reply || 'No answer came back for that question.' }]);
+    } catch (err) {
+      this.msgs.update((m) => [...m, { who: 'ai', text: err instanceof Error ? err.message : 'The question failed.' }]);
+    } finally {
+      this.pending.set(false);
+    }
   }
 }
 
