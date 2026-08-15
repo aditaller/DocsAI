@@ -5,6 +5,7 @@ interface OllamaGenerateResponse {
   response?: unknown;
   done_reason?: unknown;
   eval_count?: unknown;
+  logprobs?: unknown;
 }
 
 interface OllamaEmbedResponse {
@@ -14,6 +15,46 @@ interface OllamaEmbedResponse {
 interface OllamaChatResponse {
   message?: { content?: unknown };
   done_reason?: unknown;
+}
+
+const OCR_PROMPT =
+  'Transcribe every piece of text in this page image. Begin the reply with one line ' +
+  '"Language: <the language the document is written in>", then the transcription.';
+
+/** Reads the `Language:` line the OCR prompt asks for. Null when the model skipped it. */
+export function detectLanguage(pageText: string): string | null {
+  // `[ \t]` rather than `\s`, so a bare "Language:" cannot swallow the newline and
+  // report the first transcribed line as the language.
+  return /^[ \t]*Language:[ \t]*(.+)$/im.exec(pageText)?.[1]?.trim() || null;
+}
+
+/**
+ * Turns Ollama's per-token logprobs into one 0–1 page score: exp(mean logprob),
+ * the geometric mean of the token probabilities. A page the model transcribed
+ * confidently sits near 1; a page it guessed its way through drops fast, because
+ * one very unsure token pulls the whole mean down.
+ *
+ * Null when the reply carries no usable logprobs — an older Ollama, or a build
+ * that ignores the flag. Inventing a number there would be worse than "—".
+ */
+export function meanTokenProbability(logprobs: unknown): number | null {
+  if (!Array.isArray(logprobs)) return null;
+  const values = logprobs
+    .map((entry) => (entry as { logprob?: unknown } | null)?.logprob)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  if (!values.length) return null;
+  return Math.exp(values.reduce((total, value) => total + value, 0) / values.length);
+}
+
+/** 0–1 model score to the 0–100 the UI and Azure Document Intelligence both speak. */
+export function toPercent(confidence: number | null | undefined): number | null {
+  return typeof confidence === 'number' && Number.isFinite(confidence) ? Math.round(confidence * 1000) / 10 : null;
+}
+
+/** Document score: the mean over the pages that carry one, null when none do. */
+export function averageConfidence(pages: TextPage[]): number | null {
+  const scored = pages.map((page) => page.confidence).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  return scored.length ? toPercent(scored.reduce((total, value) => total + value, 0) / scored.length) : null;
 }
 
 export interface OcrEmbedder {
@@ -36,7 +77,7 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       // Optional so the batch CLI, which never completes text, needs no extra
       // environment. The HTTP server refuses to start without it.
       chatModel?: string;
-      /** Applies to chat only: retrieved chunks overrun Ollama's 4096 default. */
+      /** Retrieved chunks, and a vision model's reasoning, overrun Ollama's 4096 default. */
       numContext: number;
       /** Called when a page came back truncated, so the run can say so. */
       onTruncated?: (pageIndex: number) => void;
@@ -45,18 +86,27 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
   ) {}
 
   async recognizePage(page: RenderedPage): Promise<TextPage> {
-    // This payload is deliberately minimal and matches a request verified by
-    // hand against qwen3-vl:4b (~5s for a full page). Adding `think: false` or
-    // an explicit `options.num_ctx` to it made the same model spend its whole
-    // budget and return an empty body, so neither is sent here. `format: json`
-    // is what keeps the reply terse: the grammar leaves no room for a preamble
-    // or a reasoning monologue.
+    // No `format: json` here. qwen3-vl is a reasoning model, and with the JSON
+    // grammar attached it spends the whole turn in `thinking` and returns an
+    // empty `response` — measured against qwen3-vl:4b, 1382 thinking tokens and
+    // zero response tokens on a page it transcribes fine without the grammar.
+    // `think: false` and a raised num_ctx are what keep the budget on the
+    // transcription: the same page came back `done_reason=length` with nothing
+    // in `response` at Ollama's 4096 default.
     const body = await this.post<OllamaGenerateResponse>('/api/generate', {
       model: this.options.ocrModel,
-      prompt: 'extract all data',
+      // The `Language:` line is what tells the caller which script the document is
+      // in — nothing downstream can tell Hebrew from Arabic once the text is
+      // chunked. It costs one line of transcription and is indexed with the page.
+      prompt: OCR_PROMPT,
       images: [page.bytes.toString('base64')],
-      format: 'json',
       stream: false,
+      think: false,
+      // The only confidence signal a vision model gives: how sure it was of each
+      // token it emitted. Ollama builds older than the logprobs support simply
+      // ignore this and return none, which reports as "no score" rather than failing.
+      logprobs: true,
+      options: { num_ctx: this.options.numContext },
     });
     if (typeof body.response !== 'string') {
       throw new ServiceError('Ollama OCR response has no transcription', 'ollama', true);
@@ -65,8 +115,8 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     if (!text) {
       throw new ServiceError(
         `Ollama returned no text for page ${page.pageIndex} (done_reason=${String(body.done_reason)}, tokens=${String(body.eval_count)}). ` +
-          'A page that truly has no text aside, this usually means the output budget was exhausted — raise OLLAMA_NUM_CTX. ' +
-          'JSON mode can also stall some vision models; drop `format` from recognizePage to rule that out.',
+          'A page that truly has no text aside, this usually means the model spent its budget on reasoning instead of ' +
+          'transcription — raise OLLAMA_NUM_CTX, or try a non-reasoning vision model.',
         'ollama',
         false,
       );
@@ -76,7 +126,7 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     if (body.done_reason === 'length') {
       this.options.onTruncated?.(page.pageIndex);
     }
-    return { pageIndex: page.pageIndex, text };
+    return { pageIndex: page.pageIndex, text, confidence: meanTokenProbability(body.logprobs) };
   }
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -128,14 +178,16 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     return content.trim();
   }
 
-  private async post<T>(endpoint: string, body: unknown): Promise<T> {
+  private async post<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
     const fetchImplementation = this.options.fetchImplementation ?? fetch;
     let response: Response;
     try {
       response = await fetchImplementation(new URL(endpoint, this.options.baseUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        // A batch run alternates OCR / embed / chat models. Ollama's 5m default
+        // unloads each one between turns, so every page pays the reload.
+        body: JSON.stringify({ ...body, keep_alive: '4h' }),
         signal: AbortSignal.timeout(120_000),
       });
     } catch (error) {

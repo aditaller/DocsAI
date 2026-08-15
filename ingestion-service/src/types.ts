@@ -35,6 +35,13 @@ export interface RenderedDocument {
 export interface TextPage {
   pageIndex: number;
   text: string;
+  /**
+   * Geometric mean of the OCR model's token probabilities, 0–1, the local
+   * counterpart to Azure Document Intelligence's confidence. Null when the
+   * Ollama build returns no logprobs, or when the page was read back from the
+   * store rather than transcribed.
+   */
+  confidence?: number | null;
 }
 
 export interface TextChunk {

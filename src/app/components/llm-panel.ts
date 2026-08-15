@@ -87,6 +87,10 @@ import { IconComponent } from './shared';
             <di-icon name="sparkles" [size]="16" />
             {{ analyzing() ? 'Analyzing…' : 'Analyze with AI' }}
           </button>
+          <button class="btn-analyze" (click)="analyzeHebrew.emit()" [disabled]="!canAnalyze()" title="Same analysis, answered in Hebrew">
+            <di-icon name="sparkles" [size]="16" />
+            {{ analyzing() ? 'Analyzing…' : 'Analyze with AI - HEB' }}
+          </button>
         </div>
       </div>
     </section>
@@ -108,6 +112,7 @@ export class LlmPanelComponent {
   templateChange = output<string>();
   aiModelChange = output<string>();
   analyze = output<void>();
+  analyzeHebrew = output<void>();
   chat = output<void>();
 
   readonly templateEntries = Object.entries(TEMPLATES);
@@ -126,7 +131,7 @@ export class LlmPanelComponent {
   selector: 'di-response-card',
   imports: [IconComponent],
   template: `
-    <section class="zone">
+    <section class="zone" [dir]="rtl() ? 'rtl' : 'ltr'">
       <div class="zone-mark"><span class="n">03</span><span class="l">Result</span></div>
       <div class="zone-head">
         <div class="z-icon"><di-icon name="fileText" [size]="16" /></div>
@@ -209,6 +214,18 @@ export class ResponseCardComponent {
   response = input.required<AnalysisResponse | null>();
   analyzing = input.required<boolean>();
   canChat = input(false);
+
+  /**
+   * Flips the whole result section when the model answered in Hebrew. Reading the
+   * characters beats trusting a language label: the HEB button and a Hebrew source
+   * document both land here, and either one can come back in English anyway.
+   */
+  rtl = computed(() => {
+    const r = this.response();
+    if (!r) return false;
+    const text = [r.summary, ...r.fields.flatMap((f) => [f.k, f.v]), ...r.flags.flatMap((f) => [f.title, f.body])].join(' ');
+    return /[֐-׿]/.test(text); // the Hebrew block
+  });
 
   exportPdf = output<void>();
   save = output<void>();

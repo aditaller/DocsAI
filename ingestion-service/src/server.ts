@@ -5,7 +5,7 @@ import http from 'node:http';
 import { loadConfig } from './config.js';
 import { sanitizeError, ServiceError, type ErrorCode } from './errors.js';
 import { Logger } from './logger.js';
-import { OllamaClient } from './ollama.js';
+import { averageConfidence, detectLanguage, OllamaClient, toPercent } from './ollama.js';
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore, type ChunkHit } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
@@ -151,8 +151,18 @@ async function main(): Promise<void> {
       scopeId,
       reused: result.outcome === 'skipped',
       modelid: config.ollama.ocrModel,
+      // Page 1 speaks for the document; a mixed-language scan is not worth a per-page field yet.
+      language: detectLanguage(pages[0]?.text ?? ''),
+      // Same 0–100 scale Azure Document Intelligence reports. ponytail: not persisted,
+      // so a reused (already-indexed) document reports null; add a documentpage
+      // column if the score has to survive the re-submit.
+      confidence: averageConfidence(pages),
+      pages: pages.map((page) => ({
+        pageNumber: page.pageIndex,
+        text: page.text,
+        confidence: toPercent(page.confidence),
+      })),
       content: pages.map((page) => `# Page ${page.pageIndex}\n\n${page.text}`).join('\n\n'),
-      pages: pages.map((page) => ({ pageNumber: page.pageIndex, text: page.text })),
       pageCount: pages.length,
       elapsedTimeMs: Date.now() - startedAt,
     };

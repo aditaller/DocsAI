@@ -4,7 +4,7 @@
   "scripts": {
     "ng": "ng",
     "start": "node scripts/dev.mjs",
-    "start:web": "ng serve",
+    "start:web": "ng serve --port 4205",
     "start:rag": "npm --prefix ingestion-service run serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",

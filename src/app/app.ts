@@ -24,6 +24,15 @@ import { LlmPanelComponent, ResponseCardComponent } from './components/llm-panel
 import { OcrBoardComponent } from './components/ocr-board';
 import { TopBarComponent } from './components/top-bar';
 
+/**
+ * Appended by the HEB button. Kept as an instruction rather than a translated
+ * prompt so the user's own wording still drives what gets extracted — only the
+ * language of the answer changes.
+ */
+const HEBREW_INSTRUCTION =
+  'Answer entirely in Hebrew. Write every heading, label, field name and value in Hebrew, ' +
+  'except for figures, dates, and identifiers, which stay exactly as they appear in the document.';
+
 @Component({
   selector: 'app-root',
   imports: [
@@ -93,6 +102,7 @@ import { TopBarComponent } from './components/top-bar';
             (templateChange)="onTemplateChange($event)"
             (aiModelChange)="aiModelId.set($event)"
             (analyze)="onAnalyze()"
+            (analyzeHebrew)="onAnalyze(true)"
             (chat)="chatOpen.set(true)"
             (archiveFile)="onArchiveDoc($event)"
           />
@@ -387,14 +397,16 @@ export class App {
       this.jobs.update((js) =>
         js.map((j) =>
           j.jobId === job.jobId
-            ? { ...j, status: 'completed', confidence: result.confidence, pages: result.pages, progress: 100, ts: nowClock(), raw: result.raw, ocr: result.api, ragDocumentId: result.ragDocumentId ?? null }
+            ? { ...j, status: 'completed', confidence: result.confidence, pages: result.pages, progress: 100, ts: nowClock(), raw: result.raw, ocr: result.api, ragDocumentId: result.ragDocumentId ?? null, error: undefined }
             : j
         )
       );
     } catch (err) {
       console.error(`OCR failed for ${doc.name}:`, err);
+      // Both services sanitize their own errors, so the message is safe to show.
+      const reason = err instanceof Error ? err.message : String(err);
       this.jobs.update((js) =>
-        js.map((j) => (j.jobId === job.jobId ? { ...j, status: 'failed', ts: nowClock() } : j))
+        js.map((j) => (j.jobId === job.jobId ? { ...j, status: 'failed', ts: nowClock(), error: reason } : j))
       );
       this.addToast(`${this.mode() === 'local' ? 'Local OCR' : 'OCR'} failed for ${doc.name}`, 'error');
     }
@@ -503,7 +515,7 @@ export class App {
     if (t && t.text) this.prompt.set(t.text);
   }
 
-  async onAnalyze() {
+  async onAnalyze(hebrew = false) {
     const sel = this.jobs().filter((j) => this.llmSelected().includes(j.jobId) && j.status === 'completed');
     if (!sel.length) {
       this.addToast('Select an OCR-completed document to analyze', 'info');
@@ -518,8 +530,10 @@ export class App {
     this.response.set(null);
 
     const startedAt = performance.now();
+    const instruction = hebrew ? `${this.prompt()}\n\n${HEBREW_INSTRUCTION}` : this.prompt();
     try {
-      const reply = this.mode() === 'local' ? await this.analyzeLocal(sel) : await this.analyzeCloud(sel, startedAt);
+      const reply =
+        this.mode() === 'local' ? await this.analyzeLocal(sel, instruction) : await this.analyzeCloud(sel, startedAt, instruction);
 
       const base = clone(SEED_RESPONSE);
       base.id = uid();
@@ -537,7 +551,7 @@ export class App {
       });
       base.elapsedMs = Math.round(performance.now() - startedAt);
       // snapshot the instruction as sent — the textarea can be edited before Save
-      base.prompt = this.prompt();
+      base.prompt = instruction;
       this.response.set(base);
       this.addToast('Analysis complete', 'success');
     } catch (err) {
@@ -564,7 +578,7 @@ export class App {
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     const text = await res.text();
     console.log(
-      `chat: sent ${body.length}B (user ${userMessage.length}, system ${this.prompt().length}), ` +
+      `chat: sent ${body.length}B (user ${userMessage.length}, system ${instruction.length}), ` +
       `ttfb ${Math.round(tHeaders - startedAt)}ms, body ${Math.round(performance.now() - tHeaders)}ms`
     );
     // ponytail: endpoint may reply with bare text or a JSON envelope; accept both.

@@ -41,7 +41,8 @@ const environmentSchema = z.object({
   OLLAMA_CHAT_MODEL: z.string().min(1).optional(),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().max(65_535),
   // Retrieval prompts carry several chunks and overrun Ollama's 4096 default.
-  // Applies to chat only — the OCR call deliberately sends no options at all.
+  // OCR needs the headroom too: a reasoning vision model burns the default on
+  // thinking and returns an empty transcription.
   OLLAMA_NUM_CTX: z.coerce.number().int().min(2_048).max(1_048_576).default(16_384),
   LOCAL_API_PORT: z.coerce.number().int().min(1_024).max(65_535).default(11_500),
   RAG_TOP_K: z.coerce.number().int().min(1).max(100).default(8),
@@ -69,7 +70,7 @@ export interface AppConfig {
     ocrModel: string;
     embeddingModel: string;
     chatModel?: string;
-    numContext: number;
+    numContext: number;
   };
   embeddingDimensions: number;
   localApiPort: number;
@@ -156,7 +157,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       ocrModel: env.OLLAMA_OCR_MODEL,
       embeddingModel: env.OLLAMA_EMBEDDING_MODEL,
       ...(env.OLLAMA_CHAT_MODEL ? { chatModel: env.OLLAMA_CHAT_MODEL } : {}),
-      numContext: env.OLLAMA_NUM_CTX,
+      numContext: env.OLLAMA_NUM_CTX,
     },
     embeddingDimensions: env.EMBEDDING_DIMENSIONS,
     localApiPort: env.LOCAL_API_PORT,

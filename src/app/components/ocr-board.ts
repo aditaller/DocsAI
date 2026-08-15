@@ -54,12 +54,19 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
                     <span class="nm">{{ j.name }}</span>
                   </div>
                 </td>
-                <td><di-status-pill [status]="j.status" /></td>
+                <td>
+                  <di-status-pill [status]="j.status" />
+                  @if (j.status === 'failed' && j.error) {
+                    <!-- The toast is long gone by the time anyone reads the board; hover for the untruncated reason. -->
+                    <div class="fail-note" [title]="j.error">{{ j.error }}</div>
+                  }
+                </td>
                 <td class="num">
                   @if (j.status === 'completed') {
-                    <!-- Local OCR reports no per-page score; show nothing rather than a made-up number. -->
+                    <!-- No score to show rather than a made-up number: an Ollama build without
+                         logprobs, or a document whose text was reused from the index. -->
                     @if (j.confidence === null) {
-                      <span class="muted" title="Local OCR reports no confidence score">—</span>
+                      <span class="muted" title="No confidence score for this run">—</span>
                     } @else {
                       <span class="conf-strong">{{ j.confidence }}%</span>
                     }

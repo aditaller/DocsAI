@@ -33,6 +33,7 @@ export interface Job {
   isFromArchive: boolean; // mirrors the source Doc; false = uploaded, not yet in gnr.archive
   archiveId: number | null; // gnr.archive id once archived
   ragDocumentId?: number | null; // rag.document id once ingested locally; what local analysis searches
+  error?: string; // why status === 'failed'; the toast is gone by the time anyone reads the board
 }
 
 export interface Field {

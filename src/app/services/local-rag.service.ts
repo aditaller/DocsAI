@@ -6,6 +6,8 @@ export interface LocalIngestResult extends OcrResult {
   ragDocumentId: number | null;
   scopeId: number | null;
   reused: boolean;
+  /** What the OCR model said the document is written in, e.g. "Hebrew". */
+  language: string | null;
 }
 
 /** Identifies the record documents are scoped to, mirroring gnr.archive.object_type. */
@@ -58,20 +60,30 @@ export class LocalRagService {
       body: file,
     });
     const r = await this.body(res, `Local OCR failed for ${file.name}`);
-    const pages: Array<{ pageNumber: number; text: string }> = r['pages'] ?? [];
+    const pages: Array<{ pageNumber: number; text: string; confidence: number | null }> = r['pages'] ?? [];
     console.log(`local OCR ${file.name}: ${pages.length} page(s), server ${r['elapsedTimeMs'] ?? '?'}ms, total ${Math.round(performance.now() - t0)}ms`);
+
+    // Mean token probability from the vision model, on the same 0–100 scale Azure
+    // reports. Null when the Ollama build returns no logprobs, or when these bytes
+    // were already indexed and the text came back from the store; the board then
+    // renders "—" rather than inventing a number.
+    const confidence = typeof r['confidence'] === 'number' ? r['confidence'] : null;
 
     return {
       text: String(r['content'] ?? ''),
-      // The vision model returns no per-page score, so there is nothing honest to
-      // report here. The board renders "—" rather than inventing a number.
-      confidence: null,
+      confidence,
       pages: pages.length,
-      raw: { pages: pages.length, avgConf: 0, lowConf: 0, lines: pages.map((p) => `[Page ${p.pageNumber}] ${p.text}`) },
+      raw: {
+        pages: pages.length,
+        avgConf: confidence ?? 0,
+        lowConf: pages.filter((p) => typeof p.confidence === 'number' && p.confidence < 90).length,
+        lines: pages.map((p) => `[Page ${p.pageNumber}] ${p.text}`),
+      },
       api: r,
       ragDocumentId: r['ragDocumentId'] ?? null,
       scopeId: r['scopeId'] ?? null,
       reused: r['reused'] === true,
+      language: r['language'] ?? null,
     };
   }
 

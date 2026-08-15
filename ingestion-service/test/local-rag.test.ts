@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { ArchivePreflight, ArchiveReader } from '../src/archive-reader.js';
 import { ServiceError } from '../src/errors.js';
 import { Logger } from '../src/logger.js';
-import { OllamaClient } from '../src/ollama.js';
+import { averageConfidence, detectLanguage, meanTokenProbability, OllamaClient, toPercent } from '../src/ollama.js';
 import { IngestionPipeline } from '../src/pipeline.js';
 import { PostgresRagStore } from '../src/rag-store.js';
 import type { ArchiveRecord, SourceFile } from '../src/types.js';
@@ -200,6 +200,7 @@ test('chat posts to /api/chat and returns the message content', async () => {
       { role: 'user', content: 'user text' },
     ],
     options: { num_ctx: 16_384 },
+    keep_alive: '4h',
   });
 });
 
@@ -231,20 +232,51 @@ function ocrClientReturning(body: unknown, capture?: Array<Record<string, unknow
 
 const RENDERED_PAGE = { pageIndex: 1, mimeType: 'image/png' as const, bytes: Buffer.from([137, 80, 78, 71]) };
 
-test('the OCR request carries nothing beyond the payload verified by hand', async () => {
+test('the OCR request leaves the model its whole budget for transcription', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const client = ocrClientReturning({ response: '{"text":"transcribed text"}', done_reason: 'stop' }, calls);
 
   assert.equal((await client.recognizePage(RENDERED_PAGE)).text, 'text: transcribed text');
   const sent = calls[0] ?? {};
-  assert.deepEqual(Object.keys(sent).sort(), ['format', 'images', 'model', 'prompt', 'stream']);
-  assert.equal(sent['format'], 'json');
-  assert.equal(sent['prompt'], 'extract all data');
+  assert.deepEqual(Object.keys(sent).sort(), ['images', 'keep_alive', 'logprobs', 'model', 'options', 'prompt', 'stream', 'think']);
+  assert.equal(sent['logprobs'], true);
+  assert.match(String(sent['prompt']), /^Transcribe every piece of text.*Language:/s);
+  assert.equal(sent['keep_alive'], '4h');
   assert.equal(sent['stream'], false);
-  // Adding either of these made qwen3-vl:4b return an empty body; the request
-  // must stay exactly as verified.
-  assert.ok(!('think' in sent), 'think must not be sent');
-  assert.ok(!('options' in sent), 'options must not be sent');
+  assert.equal(sent['think'], false);
+  assert.deepEqual(sent['options'], { num_ctx: 16_384 });
+  // The JSON grammar sends qwen3-vl's whole turn into `thinking` and leaves
+  // `response` empty, so the OCR call must never ask for it.
+  assert.ok(!('format' in sent), 'format must not be sent');
+});
+
+test('the page score is the geometric mean of the token probabilities', async () => {
+  // ln(0.9) and ln(0.5): exp of their mean is sqrt(0.45) ≈ 0.6708.
+  const client = ocrClientReturning({
+    response: 'County Hospital',
+    done_reason: 'stop',
+    logprobs: [{ token: 'County', logprob: Math.log(0.9) }, { token: ' Hospital', logprob: Math.log(0.5) }],
+  });
+  const page = await client.recognizePage(RENDERED_PAGE);
+  assert.ok(Math.abs((page.confidence ?? 0) - Math.sqrt(0.45)) < 1e-9);
+  assert.equal(toPercent(page.confidence), 67.1);
+
+  // An Ollama build that ignores the flag must report "no score", never 0%.
+  assert.equal(meanTokenProbability(undefined), null);
+  assert.equal(meanTokenProbability([]), null);
+  assert.equal(meanTokenProbability([{ token: 'x' }]), null);
+  assert.equal((await ocrClientReturning({ response: 'text', done_reason: 'stop' }).recognizePage(RENDERED_PAGE)).confidence, null);
+
+  // Document score: pages without a score are left out, not counted as zero.
+  assert.equal(averageConfidence([{ pageIndex: 1, text: 'a', confidence: 0.8 }, { pageIndex: 2, text: 'b' }]), 80);
+  assert.equal(averageConfidence([{ pageIndex: 1, text: 'a' }]), null);
+});
+
+test('the language line the OCR prompt asks for is read back off the page', () => {
+  assert.equal(detectLanguage('Language: Hebrew\nחשבונית מס'), 'Hebrew');
+  assert.equal(detectLanguage('# Page 1\n\nlanguage:  English  \nCounty Hospital'), 'English');
+  assert.equal(detectLanguage('County Hospital\n551 West'), null, 'a page without the line reports nothing');
+  assert.equal(detectLanguage('Language:\nCounty Hospital'), null, 'an empty label is not a language');
 });
 
 test('every value in a JSON reply reaches the indexed text', async () => {

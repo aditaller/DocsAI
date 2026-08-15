@@ -624,6 +624,15 @@ di-status-pill { display: inline-flex; }
   font-variant-numeric: tabular-nums;
 }
 .ocr-table .muted { color: var(--ink-4); }
+/* The reason a row failed. Clamped to two lines so one long Ollama message
+   cannot push the whole board's row height around; title= carries the rest. */
+.ocr-table .fail-note {
+  margin-top: 5px;
+  max-width: 260px;
+  font-size: 11px; line-height: 1.4; color: var(--ink-3);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 .ocr-table .ts {
   font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3);
   font-variant-numeric: tabular-nums;
