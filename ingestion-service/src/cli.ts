@@ -8,6 +8,7 @@ import { OllamaClient } from './ollama.js';
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
+import { TesseractClient } from './tesseract.js';
 
 interface IngestArguments {
   archiveId?: number;
@@ -35,6 +36,15 @@ async function main(): Promise<void> {
     embeddingModel: config.ollama.embeddingModel,
     embeddingDimensions: config.embeddingDimensions,
   });
+  const ollama = new OllamaClient({
+    baseUrl: config.ollama.baseUrl,
+    ocrModel: config.ollama.ocrModel,
+    embeddingModel: config.ollama.embeddingModel,
+    dimensions: config.embeddingDimensions,
+    numContext: config.ollama.numContext,
+    keepAlive: config.ollama.keepAlive,
+    onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
+  });
   const pipeline = new IngestionPipeline({
     archiveReader,
     ragStore,
@@ -44,16 +54,19 @@ async function main(): Promise<void> {
         executable: config.pdfToPpmPath,
         maxPages: config.limits.maxPages,
         timeoutMs: config.limits.pdfRenderTimeoutMs,
+        dpi: config.limits.pdfRenderDpi,
       }),
     ),
-    ollama: new OllamaClient({
-      baseUrl: config.ollama.baseUrl,
-      ocrModel: config.ollama.ocrModel,
-      embeddingModel: config.ollama.embeddingModel,
-      dimensions: config.embeddingDimensions,
-      numContext: config.ollama.numContext,
-      onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
-    }),
+    ollama,
+    // No per-request override on the batch path: whatever LOCAL_OCR_ENGINE says
+    // reads the whole run.
+    ocr:
+      config.localOcrEngine === 'ollama'
+        ? { id: 'ollama', recognizer: ollama }
+        : {
+            id: config.localOcrEngine,
+            recognizer: new TesseractClient({ container: config.tesseract.container, langs: config.tesseract.langs[config.localOcrEngine] }),
+          },
     mappingVersion: config.archiveMapping.version,
     embeddingDimensions: config.embeddingDimensions,
     chunkMaxCharacters: config.limits.chunkMaxChars,

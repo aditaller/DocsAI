@@ -26,6 +26,8 @@ export interface Job {
   status: JobStatus;
   confidence: number | null;
   pages: number;
+  /** Processing time the backend reports for this document; null when it reports none. */
+  totalMs: number | null;
   ts: string;
   progress: number;
   raw?: RawOcr;
@@ -102,3 +104,11 @@ export interface Toast {
   text: string;
   kind: 'info' | 'success' | 'error';
 }
+
+/**
+ * Prefix on a streamed fragment that is the model's reasoning, not its answer.
+ * A thinking model emits reasoning for many seconds before the first answer
+ * token, and showing nothing during that time is indistinguishable from a hang.
+ * The UI renders it as visible progress and drops it when the answer starts.
+ */
+export const THINKING_PREFIX = '⚙ ';

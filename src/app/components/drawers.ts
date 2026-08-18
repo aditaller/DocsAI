@@ -1,6 +1,6 @@
 import { Component, effect, ElementRef, input, output, signal, viewChild } from '@angular/core';
 import { RAW_OCR } from '../data/data';
-import { Job, RawOcr, Toast } from '../models/models';
+import { Job, RawOcr, THINKING_PREFIX, Toast } from '../models/models';
 import { FileIconComponent, IconComponent } from './shared';
 
 @Component({
@@ -132,8 +132,8 @@ interface ChatMsg {
 export class ChatDrawerComponent {
   open = input.required<boolean>();
   docNames = input.required<string[]>();
-  /** Answers a question over the documents in context — the same retrieval the Analyze button uses. */
-  ask = input.required<(question: string) => Promise<string>>();
+  /** Answers a question over the documents in context. `onPartial` streams the reply as it is written. */
+  ask = input.required<(question: string, onPartial?: (partial: string) => void) => Promise<string>>();
   close = output<void>();
 
   msgs = signal<ChatMsg[]>([]);
@@ -164,11 +164,33 @@ export class ChatDrawerComponent {
     this.msgs.update((m) => [...m, { who: 'user', text: q }]);
     this.input.set('');
     this.pending.set(true);
+    // One placeholder bubble, rewritten in place as tokens arrive, so the answer
+    // reads as it is written instead of appearing all at once at the end.
+    let streaming = false;
+    const replaceLast = (text: string) => this.msgs.update((m) => [...m.slice(0, -1), { who: 'ai', text }]);
     try {
-      const reply = await this.ask()(q);
-      this.msgs.update((m) => [...m, { who: 'ai', text: reply || 'No answer came back for that question.' }]);
+      const reply = await this.ask()(q, (partial) => {
+        // Reasoning arrives before the answer; show only its tail so the bubble
+        // stays a progress indicator rather than a wall of the model's notes.
+        const text = partial.startsWith(THINKING_PREFIX)
+          ? `${THINKING_PREFIX}${partial.slice(THINKING_PREFIX.length).replace(/\s+/g, ' ').trim().slice(-140)}`
+          : partial;
+        if (!streaming) {
+          streaming = true;
+          this.msgs.update((m) => [...m, { who: 'ai', text }]);
+        } else {
+          replaceLast(text);
+        }
+      });
+      const text = reply || 'No answer came back for that question.';
+      if (streaming) replaceLast(text);
+      else this.msgs.update((m) => [...m, { who: 'ai', text }]);
     } catch (err) {
-      this.msgs.update((m) => [...m, { who: 'ai', text: err instanceof Error ? err.message : 'The question failed.' }]);
+      const message = err instanceof Error ? err.message : 'The question failed.';
+      // Keep whatever was already streamed and say it was cut short, rather than
+      // replacing a partial answer with a bare error.
+      if (streaming) this.msgs.update((m) => [...m, { who: 'ai', text: `⚠ ${message}` }]);
+      else this.msgs.update((m) => [...m, { who: 'ai', text: message }]);
     } finally {
       this.pending.set(false);
     }

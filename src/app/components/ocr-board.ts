@@ -1,5 +1,5 @@
 import { Component, computed, input, output } from '@angular/core';
-import { DI_CONFIG, findOcr } from '../config/di.config';
+import { DI_CONFIG, findEngine, OcrEngine } from '../config/di.config';
 import { Job } from '../models/models';
 import { FileIconComponent, IconComponent, StatusPillComponent } from './shared';
 
@@ -18,7 +18,7 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
         <div class="spacer"></div>
         <div class="select-wrap ocr-engine">
           <select [value]="engineId()" (change)="engineChange.emit($any($event.target).value)" aria-label="OCR engine">
-            @for (e of engines; track e.id) {
+            @for (e of engines(); track e.id) {
               <option [value]="e.id">OCR: {{ e.label }}</option>
             }
           </select>
@@ -41,6 +41,7 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
               <th>Status</th>
               <th class="num">Confidence</th>
               <th class="num">Pages</th>
+              <th class="num">Total time</th>
               <th>Timestamp</th>
               <th>Raw</th>
             </tr>
@@ -86,6 +87,13 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
                     {{ j.pages }}
                   }
                 </td>
+                <td class="num">
+                  @if (j.status === 'completed' && j.totalMs !== null) {
+                    <span class="ts">{{ duration(j.totalMs) }}</span>
+                  } @else {
+                    <span class="muted">—</span>
+                  }
+                </td>
                 <td><span class="ts">{{ j.ts }}</span></td>
                 <td>
                   @if (j.status === 'completed') {
@@ -97,6 +105,11 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
                     </button>
                   } @else {
                     <span class="muted" style="font-size:11.5px">—</span>
+                  }
+                  @if (j.status !== 'processing') {
+                    <button class="raw-link" (click)="rerun.emit(j)" [title]="'Run OCR again with ' + engine().label">
+                      <di-icon name="refresh" [size]="12" /> Re-run OCR
+                    </button>
                   }
                   <button class="raw-link" (click)="removeJob.emit(j)" title="Remove file from the board">
                     <di-icon name="trash" [size]="12" /> Remove
@@ -118,10 +131,12 @@ export class OcrBoardComponent {
   viewRaw = output<Job>();
   saveOcr = output<Job>();
   removeJob = output<Job>();
+  rerun = output<Job>();
   engineChange = output<string>();
 
-  readonly engines = DI_CONFIG.ocr.engines;
-  engine = computed(() => findOcr(this.engineId()));
+  /** Cloud and local modes offer different engines; the caller passes the live list. */
+  engines = input<OcrEngine[]>(DI_CONFIG.ocr.engines);
+  engine = computed(() => findEngine(this.engines(), this.engineId()));
 
   completed = computed(() => this.jobs().filter((j) => j.status === 'completed').length);
   processing = computed(() => this.jobs().filter((j) => j.status === 'processing').length);
@@ -129,5 +144,13 @@ export class OcrBoardComponent {
 
   round(n: number) {
     return Math.round(n);
+  }
+
+  /** Sub-second work reads better in ms; a multi-minute vision run reads better as m:ss. */
+  duration(ms: number) {
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+    const seconds = Math.round(ms / 1000);
+    return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
   }
 }

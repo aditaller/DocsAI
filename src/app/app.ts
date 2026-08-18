@@ -9,8 +9,8 @@ import {
   TEMPLATES,
   uid,
 } from './data/data';
-import { DI_CONFIG, findAi, findOcr } from './config/di.config';
-import { AnalysisResponse, Doc, Job, Toast } from './models/models';
+import { DI_CONFIG, findAi, findEngine } from './config/di.config';
+import { AnalysisResponse, Doc, Job, THINKING_PREFIX, Toast } from './models/models';
 import { AuthService } from './services/auth.service';
 import { archiveToDoc, CustomerHit, CustomerService } from './services/customer.service';
 import { LocalHealth, LocalRagService, RagScope } from './services/local-rag.service';
@@ -82,11 +82,13 @@ const HEBREW_INSTRUCTION =
         <div class="right-panel">
           <di-ocr-board
             [jobs]="jobs()"
-            [engineId]="ocrEngineId()"
+            [engines]="engineOptions()"
+            [engineId]="activeEngineId()"
             (viewRaw)="rawJob.set($event)"
             (saveOcr)="onSaveOcr($event)"
             (removeJob)="onRemoveJob($event)"
-            (engineChange)="ocrEngineId.set($event)"
+            (rerun)="onRerunOcr($event)"
+            (engineChange)="onEngineChange($event)"
           />
           <di-llm-panel
             [jobs]="jobs()"
@@ -144,14 +146,20 @@ export class App {
 
   // ---- Config-driven tool selection ----
   ocrEngineId = signal(DI_CONFIG.ocr.defaultId);
+  // Local mode picks between the two engines the ingestion service can run.
+  // Kept separate from ocrEngineId so switching modes does not lose the choice.
+  localEngineId = signal(DI_CONFIG.local.defaultEngineId);
   aiModelId = signal(DI_CONFIG.ai.defaultId);
-  ocrEngine = computed(() => findOcr(this.ocrEngineId()));
 
   // ---- Engine mode ---- 'azure' keeps the cloud OCR + chat pair; 'local' runs
-  // Ollama vision OCR into pgvector and answers from retrieved chunks.
+  // OCR into pgvector and answers from retrieved chunks.
   mode = signal<'azure' | 'local'>('azure');
   localHealth = signal<LocalHealth | null>(null);
-  engineLabel = computed(() => (this.mode() === 'local' ? DI_CONFIG.local.label : this.ocrEngine().short));
+
+  engineOptions = computed(() => (this.mode() === 'local' ? DI_CONFIG.local.engines : DI_CONFIG.ocr.engines));
+  activeEngineId = computed(() => (this.mode() === 'local' ? this.localEngineId() : this.ocrEngineId()));
+  ocrEngine = computed(() => findEngine(this.engineOptions(), this.activeEngineId()));
+  engineLabel = computed(() => (this.mode() === 'local' ? `${DI_CONFIG.local.label} · ${this.ocrEngine().short}` : this.ocrEngine().short));
 
   // ---- LLM ----
   llmSelected = signal<string[]>([]);
@@ -189,12 +197,14 @@ export class App {
   canChat = computed(() => this.chatJobs().some((j) => j.ragDocumentId != null));
 
   /** Bound so the drawer can hold it as a plain input; routes questions through the active engine. */
-  askDocs = async (question: string): Promise<string> => {
+  askDocs = async (question: string, onPartial?: (partial: string) => void): Promise<string> => {
     const sel = this.chatJobs();
     if (!sel.length) return 'No OCR-completed documents are in context yet.';
     if (this.mode() === 'local') {
       if (!sel.some((j) => j.ragDocumentId)) return 'These documents were not indexed locally — re-run OCR in local mode first.';
-      return this.analyzeLocal(sel, question);
+      // Retrieval, not full documents: a follow-up is narrow, and the drawer is
+      // used repeatedly, so re-reading every page per question would not pay.
+      return this.analyzeLocal(sel, question, { full: false, ...(onPartial ? { onPartial } : {}) });
     }
     return this.analyzeCloud(sel, performance.now(), question);
   };
@@ -220,10 +230,16 @@ export class App {
     this.mode.set(next);
     if (next === 'local') {
       void this.refreshLocalHealth();
-      this.addToast('Local RAG: Ollama vision OCR into pgvector', 'info');
+      this.addToast(`Local RAG: ${this.ocrEngine().short} OCR into pgvector`, 'info');
     } else {
       this.addToast(`Cloud: ${this.ocrEngine().short}`, 'info');
     }
+  }
+
+  /** One dropdown, two independent selections — the mode decides which it sets. */
+  onEngineChange(id: string) {
+    if (this.mode() === 'local') this.localEngineId.set(id);
+    else this.ocrEngineId.set(id);
   }
 
   /** The record documents are scoped to; created in rag.claim on first ingest. */
@@ -236,7 +252,7 @@ export class App {
   }
 
   private modelLabel(): string {
-    if (this.mode() === 'local') return DI_CONFIG.local.label;
+    if (this.mode() === 'local') return this.engineLabel();
     const m = findAi(this.aiModelId());
     return `${m.label} · ${m.version}`;
   }
@@ -364,6 +380,7 @@ export class App {
       status: 'processing',
       confidence: null,
       pages: 0,
+      totalMs: null,
       ts: nowClock(),
       progress: 0,
       isFromArchive: d.isFromArchive,
@@ -382,22 +399,43 @@ export class App {
     // the request timeout. Local mode therefore runs them one after another.
     if (this.mode() === 'local') {
       void (async () => {
-        for (const doc of fresh) await this.runOcrForJob(doc, newJobs);
+        for (const doc of fresh) await this.runOcrForJob(doc, newJobs.find((j) => j.docId === doc.id)!);
       })();
     } else {
-      for (const doc of fresh) void this.runOcrForJob(doc, newJobs);
+      for (const doc of fresh) void this.runOcrForJob(doc, newJobs.find((j) => j.docId === doc.id)!);
     }
   }
 
+  /**
+   * Runs OCR again for a row already on the board — after a failure, or to read
+   * the same document with the other engine. The service treats a re-submit as a
+   * retry, so a terminally failed run is reclaimed rather than refused.
+   */
+  onRerunOcr(job: Job) {
+    const doc = this.docs().find((d) => d.id === job.docId);
+    if (!doc) {
+      this.addToast(`${job.name} is no longer in the document list`, 'error');
+      return;
+    }
+    if (this.mode() === 'local' && doc.archiveId == null) {
+      this.addToast(`Archive ${doc.name} first — local RAG indexes against it`, 'error');
+      return;
+    }
+    this.jobs.update((js) =>
+      js.map((j) => (j.jobId === job.jobId ? { ...j, status: 'processing', progress: 0, confidence: null, totalMs: null, ts: nowClock(), error: undefined } : j)),
+    );
+    this.addToast(`Re-running ${doc.name} on ${this.engineLabel()}`, 'info');
+    void this.runOcrForJob(doc, job);
+  }
+
   /** OCRs one document and folds the outcome into its job row. Never rejects. */
-  private async runOcrForJob(doc: Doc, jobs: Job[]): Promise<void> {
-    const job = jobs.find((j) => j.docId === doc.id)!;
+  private async runOcrForJob(doc: Doc, job: Job): Promise<void> {
     try {
       const result = await this.runOcr(doc);
       this.jobs.update((js) =>
         js.map((j) =>
           j.jobId === job.jobId
-            ? { ...j, status: 'completed', confidence: result.confidence, pages: result.pages, progress: 100, ts: nowClock(), raw: result.raw, ocr: result.api, ragDocumentId: result.ragDocumentId ?? null, error: undefined }
+            ? { ...j, status: 'completed', confidence: result.confidence, pages: result.pages, totalMs: result.totalMs, progress: 100, ts: nowClock(), raw: result.raw, ocr: result.api, ragDocumentId: result.ragDocumentId ?? null, error: undefined }
             : j
         )
       );
@@ -415,7 +453,7 @@ export class App {
   /** The single point where the two OCR engines diverge. */
   private async runOcr(doc: Doc): Promise<OcrResult & { ragDocumentId?: number | null }> {
     const file = await this.resolveFile(doc);
-    if (this.mode() === 'local') return this.localRag.ingest(file, doc.archiveId!, this.ragScope());
+    if (this.mode() === 'local') return this.localRag.ingest(file, doc.archiveId!, this.ragScope(), this.localEngineId());
     return this.ocrService.recognize(file, this.ocrEngineId());
   }
 
@@ -532,8 +570,13 @@ export class App {
     const startedAt = performance.now();
     const instruction = hebrew ? `${this.prompt()}\n\n${HEBREW_INSTRUCTION}` : this.prompt();
     try {
+      // Local streams: the answer card is created empty and filled as tokens
+      // land, so a long extraction is readable while it is still being written.
+      // Cloud has no streaming endpoint, so it still resolves in one piece.
       const reply =
-        this.mode() === 'local' ? await this.analyzeLocal(sel, instruction) : await this.analyzeCloud(sel, startedAt, instruction);
+        this.mode() === 'local'
+          ? await this.analyzeLocal(sel, instruction, { full: true, onPartial: (p) => this.streamInto(p) })
+          : await this.analyzeCloud(sel, startedAt, instruction);
 
       const base = clone(SEED_RESPONSE);
       base.id = uid();
@@ -595,10 +638,33 @@ export class App {
    * PDF costs the same context as a short one. Citations are appended so every
    * claim in the answer can be traced back to a page.
    */
-  private async analyzeLocal(sel: Job[], instruction = this.prompt()): Promise<string> {
+  /**
+   * `full` and `onPartial` are independent on purpose: Analyze sends every OCR
+   * page, the chat drawer retrieves, and both stream their reply.
+   */
+  private async analyzeLocal(
+    sel: Job[],
+    instruction = this.prompt(),
+    options: { full?: boolean; onPartial?: (partial: string) => void } = {},
+  ): Promise<string> {
     const ids = sel.map((j) => j.ragDocumentId).filter((id): id is number => typeof id === 'number');
-    const result = await this.localRag.chat(instruction, ids);
-    console.log(`local chat: ${ids.length} doc(s), ${result.citations.length} chunk(s), server ${result.elapsedTimeMs}ms`);
+    const { full = false, onPartial } = options;
+    let streamed = '';
+    let reasoning = '';
+    const result = await this.localRag.chat(instruction, ids, {
+      full,
+      ...(onPartial
+        ? {
+            onToken: (t) => onPartial((streamed += t)),
+            // Reasoning shows first and is replaced the moment the answer starts,
+            // since onToken always reports the full answer text so far.
+            onThinking: (t) => onPartial(`${THINKING_PREFIX}${(reasoning += t)}`),
+          }
+        : {}),
+    });
+    console.log(
+      `local ${full ? 'analyze' : 'chat'}: ${ids.length} doc(s), ${result.citations.length} source(s), server ${result.elapsedTimeMs}ms`,
+    );
     if (!result.citations.length) return result.reply;
 
     const names = new Map(sel.map((j) => [j.ragDocumentId, j.name]));
@@ -609,6 +675,37 @@ export class App {
       })
       .filter((value, index, all) => all.indexOf(value) === index);
     return `${result.reply}\n\nSources: ${sources.join(' · ')}`;
+  }
+
+  /**
+   * Shows the answer as it is written. The first token creates the card so the
+   * user stops looking at a spinner; every later one just rewrites the summary.
+   * The final object built in onAnalyze replaces this with the complete record.
+   */
+  private streamInto(partial: string): void {
+    // Reasoning is condensed to its tail: it is progress, not content, and the
+    // first answer token replaces it wholesale.
+    const summary = (
+      partial.startsWith(THINKING_PREFIX)
+        ? `${THINKING_PREFIX}${partial.slice(THINKING_PREFIX.length).replace(/\s+/g, ' ').trim().slice(-160)}`
+        : partial
+    ).replace(/\n/g, '<br>');
+    const existing = this.response();
+    if (existing) {
+      this.response.set({ ...existing, summary });
+      return;
+    }
+    const base = clone(SEED_RESPONSE);
+    base.id = uid();
+    base.docNames = this.jobs().filter((j) => this.llmSelected().includes(j.jobId)).map((j) => j.name);
+    base.timestamp = this.fmtNow();
+    base.model = this.modelLabel();
+    base.saved = false;
+    base.fields = [];
+    base.flags = [];
+    base.relatedFiles = [];
+    base.summary = summary;
+    this.response.set(base);
   }
 
   private fmtNow(): string {

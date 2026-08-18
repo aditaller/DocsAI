@@ -2,7 +2,7 @@ import type { ArchivePreflight, ArchiveReader } from '../src/archive-reader.js';
 import type { ChatModel, OcrEmbedder } from '../src/ollama.js';
 import type { ChunkHit, JobRecord, PersistedDocument, RagStore } from '../src/rag-store.js';
 import type { PageRenderer } from '../src/renderer.js';
-import type { ArchiveRecord, RenderedDocument, SourceFile, TextChunk, TextPage } from '../src/types.js';
+import type { ArchiveRecord, PageRecognizer, RenderedDocument, RenderedPage, SourceFile, TextChunk, TextPage } from '../src/types.js';
 
 export class FakePageRenderer implements PageRenderer {
   calls = 0;
@@ -43,6 +43,18 @@ export class FakeOllama implements OcrEmbedder {
   }
 }
 
+/** A second OCR engine, so a test can tell which one the pipeline actually used. */
+export class FakeRecognizer implements PageRecognizer {
+  seen: number[] = [];
+
+  constructor(private readonly label = 'other engine') {}
+
+  async recognizePage(page: RenderedPage): Promise<TextPage> {
+    this.seen.push(page.pageIndex);
+    return { pageIndex: page.pageIndex, text: `${this.label} page ${page.pageIndex}`, confidence: 0.5 };
+  }
+}
+
 export class FakeChatModel implements ChatModel {
   lastCall?: { systemMessage: string; userMessage: string };
 
@@ -61,10 +73,11 @@ export class FakeRagStore implements RagStore {
   scopeId = 4242;
   scopeCalls: Array<{ objectType: string; objectId: number; label: string }> = [];
   createdWith?: { archiveId: number; claimId: number };
+  lastFingerprint?: string;
   lastSearch?: { embedding: number[]; documentIds: number[]; topK: number };
   completed?: { jobId: number; documentId: number };
   failure?: { jobId: number; state: 'RETRY_WAIT' | 'FAILED' };
-  persisted?: { chunks: TextChunk[]; embeddings: number[][] };
+  persisted?: { chunks: TextChunk[]; embeddings: number[][]; pages: TextPage[] };
   chunking?: { jobId: number; pageCount: number; markdownFullText: string; parseDurationMs: number };
   embedding?: { jobId: number; chunkCount: number };
   preflights: boolean[] = [];
@@ -79,8 +92,9 @@ export class FakeRagStore implements RagStore {
     return [];
   }
 
-  async createJob(sourceArchiveId: number, sourceClaimId: number, _mappingVersion: string, _sourceFingerprint: string, _sourceHash: string): Promise<JobRecord> {
+  async createJob(sourceArchiveId: number, sourceClaimId: number, _mappingVersion: string, sourceFingerprint: string, _sourceHash: string): Promise<JobRecord> {
     this.createdWith = { archiveId: sourceArchiveId, claimId: sourceClaimId };
+    this.lastFingerprint = sourceFingerprint;
     return { id: 1, ragClaimId: 5, state: 'PENDING', attempts: 0, claimed: false };
   }
 
@@ -104,7 +118,7 @@ export class FakeRagStore implements RagStore {
   }
 
   async persistDocument(input: Parameters<RagStore['persistDocument']>[0]): Promise<PersistedDocument> {
-    this.persisted = { chunks: input.chunks, embeddings: input.embeddings };
+    this.persisted = { chunks: input.chunks, embeddings: input.embeddings, pages: input.pages };
     this.completed = { jobId: input.jobId, documentId: 99 };
     return { id: 99, ragDocumentId: 7, alreadyExisted: false };
   }
@@ -116,6 +130,12 @@ export class FakeRagStore implements RagStore {
 
   async getDocumentPages(_documentId: number): Promise<TextPage[]> {
     return this.storedPages;
+  }
+
+  storedDurationMs: number | null = null;
+
+  async getDocumentDurationMs(_documentId: number): Promise<number | null> {
+    return this.storedDurationMs;
   }
 
   async resolveScope(objectType: string, objectId: number, label: string): Promise<number> {

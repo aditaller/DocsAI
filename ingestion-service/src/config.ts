@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { OCR_ENGINE_IDS, type OcrEngineId } from './types.js';
+
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const identifierSchema = z.string().regex(IDENTIFIER, 'must be a simple SQL identifier');
@@ -44,9 +46,27 @@ const environmentSchema = z.object({
   // OCR needs the headroom too: a reasoning vision model burns the default on
   // thinking and returns an empty transcription.
   OLLAMA_NUM_CTX: z.coerce.number().int().min(2_048).max(1_048_576).default(16_384),
+  // How long Ollama holds a model in VRAM after a call. Chat and embedding run
+  // back to back on every question, so an expiry short enough to unload between
+  // them makes each turn pay a multi-second reload. Ollama's own duration
+  // strings ('1h', '30m', '-1' for forever).
+  OLLAMA_KEEP_ALIVE: z.string().min(1).default('1h'),
+  // Which engine reads the pages. The HTTP server lets a request override this
+  // per document; the batch CLI has no such caller and runs whatever is set here.
+  LOCAL_OCR_ENGINE: z.enum(OCR_ENGINE_IDS).default('tesseract-heb'),
+  TESSERACT_CONTAINER: z.string().min(1).default('tesseract-ocr'),
+  // Order matters: the first language is the primary one. `heb+eng` reads Hebrew
+  // documents that carry Latin names, numbers and stamps — dropping `eng` there
+  // turns every date and amount into noise.
+  TESSERACT_LANGS_HEB: z.string().min(1).default('heb+eng'),
+  // An English document is read better without `heb` loaded at all.
+  TESSERACT_LANGS_ENG: z.string().min(1).default('eng'),
   LOCAL_API_PORT: z.coerce.number().int().min(1_024).max(65_535).default(11_500),
   RAG_TOP_K: z.coerce.number().int().min(1).max(100).default(8),
   PDFTOPPM_PATH: z.string().min(1).default('pdftoppm'),
+  // poppler's own default. Tesseract wants 300 for Hebrew; the vision model pays
+  // for the extra pixels in image tokens, so this is left where it was.
+  PDF_RENDER_DPI: z.coerce.number().int().min(72).max(600).default(150),
   MAX_SOURCE_BYTES: z.coerce.number().int().positive().max(1_073_741_824).default(52_428_800),
   MAX_PAGES: z.coerce.number().int().positive().max(10_000).default(100),
   PDF_RENDER_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(120_000),
@@ -71,7 +91,14 @@ export interface AppConfig {
     embeddingModel: string;
     chatModel?: string;
     numContext: number;
+    keepAlive: string;
   };
+  tesseract: {
+    container: string;
+    /** Language spec per tesseract engine id, keyed by the id the caller asks for. */
+    langs: Record<'tesseract-heb' | 'tesseract-eng', string>;
+  };
+  localOcrEngine: OcrEngineId;
   embeddingDimensions: number;
   localApiPort: number;
   ragTopK: number;
@@ -80,6 +107,7 @@ export interface AppConfig {
     maxSourceBytes: number;
     maxPages: number;
     pdfRenderTimeoutMs: number;
+    pdfRenderDpi: number;
     chunkMaxChars: number;
     chunkOverlapChars: number;
   };
@@ -158,7 +186,13 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       embeddingModel: env.OLLAMA_EMBEDDING_MODEL,
       ...(env.OLLAMA_CHAT_MODEL ? { chatModel: env.OLLAMA_CHAT_MODEL } : {}),
       numContext: env.OLLAMA_NUM_CTX,
+      keepAlive: env.OLLAMA_KEEP_ALIVE,
     },
+    tesseract: {
+      container: env.TESSERACT_CONTAINER,
+      langs: { 'tesseract-heb': env.TESSERACT_LANGS_HEB, 'tesseract-eng': env.TESSERACT_LANGS_ENG },
+    },
+    localOcrEngine: env.LOCAL_OCR_ENGINE,
     embeddingDimensions: env.EMBEDDING_DIMENSIONS,
     localApiPort: env.LOCAL_API_PORT,
     ragTopK: env.RAG_TOP_K,
@@ -167,6 +201,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       maxSourceBytes: env.MAX_SOURCE_BYTES,
       maxPages: env.MAX_PAGES,
       pdfRenderTimeoutMs: env.PDF_RENDER_TIMEOUT_MS,
+      pdfRenderDpi: env.PDF_RENDER_DPI,
       chunkMaxChars: env.CHUNK_MAX_CHARS,
       chunkOverlapChars: env.CHUNK_OVERLAP_CHARS,
     },

@@ -1,5 +1,5 @@
 import { ServiceError } from './errors.js';
-import type { RenderedPage, TextPage } from './types.js';
+import type { PageRecognizer, RenderedPage, TextPage } from './types.js';
 
 interface OllamaGenerateResponse {
   response?: unknown;
@@ -13,8 +13,38 @@ interface OllamaEmbedResponse {
 }
 
 interface OllamaChatResponse {
-  message?: { content?: unknown };
+  message?: { content?: unknown; thinking?: unknown };
   done_reason?: unknown;
+  /** Tokens Ollama actually read from the prompt. Only the final frame carries it. */
+  prompt_eval_count?: unknown;
+}
+
+// A streamed answer emits tokens the whole time, so the ceiling is total answer
+// length rather than time-to-first-byte. The buffered OCR call shares it.
+const REQUEST_TIMEOUT_MS = 600_000;
+const DEFAULT_KEEP_ALIVE = '1h';
+
+/** Yields complete newline-delimited lines from a streamed response body. */
+async function* readLines(response: Response): AsyncGenerator<string> {
+  if (!response.body) throw new ServiceError('Ollama returned no response body', 'ollama', true);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline: number;
+    // A chunk boundary can fall mid-line, so only complete lines are emitted
+    // and the remainder is carried into the next read.
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) yield line;
+    }
+  }
+  const tail = buffer.trim();
+  if (tail) yield tail;
 }
 
 const OCR_PROMPT =
@@ -57,14 +87,13 @@ export function averageConfidence(pages: TextPage[]): number | null {
   return scored.length ? toPercent(scored.reduce((total, value) => total + value, 0) / scored.length) : null;
 }
 
-export interface OcrEmbedder {
-  recognizePage(page: RenderedPage): Promise<TextPage>;
+export interface OcrEmbedder extends PageRecognizer {
   embed(texts: string[]): Promise<number[][]>;
 }
 
 /** Text completion, kept separate from OCR/embedding so retrieval can stub it alone. */
 export interface ChatModel {
-  chat(systemMessage: string, userMessage: string): Promise<string>;
+  chat(systemMessage: string, userMessage: string, onToken?: (token: string, thinking: boolean) => void): Promise<string>;
 }
 
 export class OllamaClient implements OcrEmbedder, ChatModel {
@@ -79,8 +108,16 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       chatModel?: string;
       /** Retrieved chunks, and a vision model's reasoning, overrun Ollama's 4096 default. */
       numContext: number;
+      /** How long Ollama holds each model in VRAM between calls (OLLAMA_KEEP_ALIVE). */
+      keepAlive?: string;
       /** Called when a page came back truncated, so the run can say so. */
       onTruncated?: (pageIndex: number) => void;
+      /**
+       * Real prompt token count for a completed chat. The context budget can only
+       * estimate tokens from characters, so this is how the estimate gets checked
+       * against what Ollama actually read.
+       */
+      onPromptTokens?: (tokens: number) => void;
       fetchImplementation?: typeof fetch;
     },
   ) {}
@@ -151,25 +188,72 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     });
   }
 
-  async chat(systemMessage: string, userMessage: string): Promise<string> {
+  /**
+   * Always streams. A full-document answer runs to thousands of tokens, and
+   * buffering it meant the caller stared at nothing for over a minute; `onToken`
+   * lets the HTTP layer forward each fragment as it lands. The accumulated text
+   * is still returned, so a caller that does not care about progress passes no
+   * callback and reads the result exactly as before.
+   *
+   * A reasoning model emits its reasoning first, on a separate `thinking` field,
+   * and only then the answer. Measured on gpt-oss:20b over one page: first
+   * thinking token at 1.1s, first content token at 13.7s. Forwarding only the
+   * content would leave the caller with a blank screen for that whole stretch,
+   * so reasoning is reported too — flagged, so it is never mistaken for answer
+   * text or returned as the reply.
+   */
+  async chat(
+    systemMessage: string,
+    userMessage: string,
+    onToken?: (token: string, thinking: boolean) => void,
+  ): Promise<string> {
     if (!this.options.chatModel) {
       throw new ServiceError('OLLAMA_CHAT_MODEL is not configured', 'configuration', false);
     }
-    const body = await this.post<OllamaChatResponse>('/api/chat', {
+    const response = await this.send('/api/chat', {
       model: this.options.chatModel,
-      stream: false,
+      stream: true,
+      nothink:true,
       messages: [
         { role: 'system', content: systemMessage },
         { role: 'user', content: userMessage },
       ],
-      // Retrieved chunks make this prompt large; the 4096-token default would
-      // truncate the context before the model ever saw the last excerpt.
+      // A whole document makes this prompt large; the 4096-token default would
+      // truncate the context before the model ever saw the last page.
       options: { num_ctx: this.options.numContext },
     });
-    const content = body.message?.content;
-    if (typeof content !== 'string' || !content.trim()) {
+
+    let content = '';
+    let doneReason: unknown;
+    let promptTokens: number | undefined;
+    // Ollama streams NDJSON, one object per line, and a chunk boundary can fall
+    // mid-line — so the tail is carried over rather than parsed.
+    for await (const line of readLines(response)) {
+      let frame: OllamaChatResponse;
+      try {
+        frame = JSON.parse(line) as OllamaChatResponse;
+      } catch {
+        continue; // a keep-alive blank or a partial trailing line
+      }
+      if (frame.done_reason !== undefined) doneReason = frame.done_reason;
+      if (typeof frame.prompt_eval_count === 'number') promptTokens = frame.prompt_eval_count;
+      const reasoning = frame.message?.thinking;
+      if (typeof reasoning === 'string' && reasoning) onToken?.(reasoning, true);
+      const token = frame.message?.content;
+      if (typeof token === 'string' && token) {
+        content += token;
+        onToken?.(token, false);
+      }
+    }
+
+    // Reported after the stream, not during: only the final frame carries it, and
+    // it is the one number that shows whether the character-based context budget
+    // matched what the model actually read.
+    if (promptTokens !== undefined) this.options.onPromptTokens?.(promptTokens);
+
+    if (!content.trim()) {
       throw new ServiceError(
-        `Ollama chat returned no content (done_reason=${String(body.done_reason)}). ` +
+        `Ollama chat returned no content (done_reason=${String(doneReason)}). ` +
           'A thinking model can exhaust its output budget before answering — raise OLLAMA_NUM_CTX.',
         'ollama',
         false,
@@ -179,6 +263,16 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
   }
 
   private async post<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+    const response = await this.send(endpoint, body);
+    try {
+      return (await response.json()) as T;
+    } catch {
+      throw new ServiceError('Ollama returned invalid JSON', 'ollama', true);
+    }
+  }
+
+  /** Shared request/error handling for both the buffered and the streamed reads. */
+  private async send(endpoint: string, body: Record<string, unknown>): Promise<Response> {
     const fetchImplementation = this.options.fetchImplementation ?? fetch;
     let response: Response;
     try {
@@ -187,8 +281,8 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
         headers: { 'content-type': 'application/json' },
         // A batch run alternates OCR / embed / chat models. Ollama's 5m default
         // unloads each one between turns, so every page pays the reload.
-        body: JSON.stringify({ ...body, keep_alive: '4h' }),
-        signal: AbortSignal.timeout(120_000),
+        body: JSON.stringify({ ...body, keep_alive: this.options.keepAlive ?? DEFAULT_KEEP_ALIVE }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
       throw new ServiceError(error instanceof Error ? `Ollama request failed: ${error.message}` : 'Ollama request failed', 'ollama', true);
@@ -196,11 +290,7 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
     if (!response.ok) {
       throw new ServiceError(`Ollama returned HTTP ${response.status}`, 'ollama', response.status === 408 || response.status === 429 || response.status >= 500);
     }
-    try {
-      return (await response.json()) as T;
-    } catch {
-      throw new ServiceError('Ollama returned invalid JSON', 'ollama', true);
-    }
+    return response;
   }
 
 }

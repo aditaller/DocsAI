@@ -9,14 +9,48 @@ import { averageConfidence, detectLanguage, OllamaClient, toPercent } from './ol
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore, type ChunkHit } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
-import type { TextPage } from './types.js';
+import { detectScript, TesseractClient } from './tesseract.js';
+import { OCR_ENGINE_IDS, type OcrEngineChoice, type OcrEngineId, type TextPage } from './types.js';
 
 const HOST = '127.0.0.1';
 
+/** Share of the context window left for the answer rather than the documents. */
+const ANSWER_HEADROOM = 0.7;
+/**
+ * Characters per token for this corpus, measured rather than assumed. Ollama
+ * exposes no tokenizer endpoint, so this comes from `prompt_eval_count` on real
+ * gpt-oss:20b calls, less the 63-token prompt overhead:
+ *
+ *   Hebrew                 1800 chars / 600 tokens = 3.00
+ *   English                1890 chars / 390 tokens = 4.85
+ *   pdftotext -layout pads 2400 chars / 389 tokens = 6.17
+ *
+ * 3.00 is the worst observed case rather than a typical one: Latin text and the
+ * column padding both tokenize far better. Under-reserving here is what causes a
+ * silent truncation instead of a clear refusal, so the worst case is what the
+ * budget is built on. `local_chat_completed` logs the real count against this
+ * estimate on every call — re-measure from those logs rather than guessing again.
+ */
+const CHARS_PER_TOKEN = 3.0;
+
+interface ChatContext {
+  context: string;
+  citations: Array<{ documentId: number; pageStart: number; pageEnd: number; distance?: number }>;
+  /** Set when there is nothing to answer from; carries the message to show. */
+  empty: string | null;
+}
+
+// The instruction has to permit a partial answer. Asking a hospital bill for
+// "the FNOL and adjuster statement" used to end the turn — the model reported the
+// wording as absent and stopped, without mentioning the provider, payer, patient
+// and service dates that were sitting in the excerpt. Grounding is kept: it may
+// map the question onto what the document calls things, never invent.
 const RETRIEVAL_SYSTEM_SUFFIX =
   '\n\nAnswer only from the document excerpts provided below. ' +
   'Each excerpt is labelled with its document and page numbers. ' +
-  'Cite the page you used inline. If the excerpts do not contain the answer, say so plainly instead of guessing.';
+  'Cite the page you used inline. ' +
+  'The document will rarely use the same wording as the question: answer with the equivalent information it does contain and say what you mapped onto what. ' +
+  'List whatever parts of the question the excerpts genuinely cannot answer, but only after giving everything they can. Never invent a value.';
 
 /**
  * Loopback-only HTTP surface over the same pipeline the CLI drives.
@@ -44,21 +78,34 @@ async function main(): Promise<void> {
     dimensions: config.embeddingDimensions,
     chatModel: config.ollama.chatModel,
     numContext: config.ollama.numContext,
+    keepAlive: config.ollama.keepAlive,
     onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
+  });
+  // One client per language set — the languages are fixed when the engine is
+  // built, so a request only ever names an engine, never a language spec.
+  const tesseractHeb = new TesseractClient({ container: config.tesseract.container, langs: config.tesseract.langs['tesseract-heb'] });
+  const tesseractEng = new TesseractClient({ container: config.tesseract.container, langs: config.tesseract.langs['tesseract-eng'] });
+  // Every ingest names its engine; the request may override the configured one
+  // per document, which is how they are compared on the same scan.
+  const engines: Record<OcrEngineId, OcrEngineChoice> = {
+    ollama: { id: 'ollama', recognizer: ollama },
+    'tesseract-heb': { id: 'tesseract-heb', recognizer: tesseractHeb },
+    'tesseract-eng': { id: 'tesseract-eng', recognizer: tesseractEng },
+  };
+  // Held in a local rather than inlined, so health() can probe the binary.
+  const pdfRenderer = new PopplerPdfRenderer({
+    executable: config.pdfToPpmPath,
+    maxPages: config.limits.maxPages,
+    timeoutMs: config.limits.pdfRenderTimeoutMs,
+    dpi: config.limits.pdfRenderDpi,
   });
   // No archiveReader: every route here supplies its own bytes, so this process
   // never opens a SQL Server connection and does not need one configured.
   const pipeline = new IngestionPipeline({
     ragStore,
-    renderer: new SourceRenderer(
-      new ImagePageRenderer(),
-      new PopplerPdfRenderer({
-        executable: config.pdfToPpmPath,
-        maxPages: config.limits.maxPages,
-        timeoutMs: config.limits.pdfRenderTimeoutMs,
-      }),
-    ),
+    renderer: new SourceRenderer(new ImagePageRenderer(), pdfRenderer),
     ollama,
+    ocr: engines[config.localOcrEngine],
     mappingVersion: config.archiveMapping.version,
     embeddingDimensions: config.embeddingDimensions,
     chunkMaxCharacters: config.limits.chunkMaxChars,
@@ -83,25 +130,35 @@ async function main(): Promise<void> {
 
     if (route === 'GET /api/local/health') return sendJson(response, 200, await health());
     if (route === 'POST /api/local/ingest') return sendJson(response, 200, await ingest(url, request));
-    if (route === 'POST /api/local/chat') return sendJson(response, 200, await chat(request));
+    if (route === 'POST /api/local/chat') return chat(request, response);
     return sendJson(response, 404, { error: 'Unknown route', code: 'unknown' });
   }
 
   // Scope rows are created on demand now, so there is no per-record readiness to
   // report and this takes no parameters.
   async function health(): Promise<Record<string, unknown>> {
-    const [postgres, models] = await Promise.all([
+    const [postgres, models, tesseractVersion, pdftoppm] = await Promise.all([
       ragStore.preflight().then(() => true).catch(() => false),
       listOllamaModels().catch(() => null),
+      // Either client proves the container answers; they differ only in languages.
+      tesseractHeb.version().catch(() => null),
+      pdfRenderer.version().then(() => true).catch(() => false),
     ]);
     const required = [config.ollama.ocrModel, config.ollama.embeddingModel, config.ollama.chatModel!];
     const missingModels = models ? required.filter((name) => !models.some((m) => m === name || m.startsWith(`${name}:`))) : required;
 
     return {
+      // Ollama still gates `ok`: it embeds and answers on both OCR paths, so the
+      // local mode is unusable without it whatever the container is doing.
       ok: postgres && models !== null && missingModels.length === 0,
       postgres,
       ollama: models !== null,
       missingModels,
+      tesseract: tesseractVersion !== null,
+      // Out of the `ok` gate for the same reason as tesseract: images still
+      // ingest without poppler, only PDFs need it.
+      pdftoppm,
+      engine: config.localOcrEngine,
     };
   }
 
@@ -112,6 +169,7 @@ async function main(): Promise<void> {
     const objectId = requirePositiveInteger(url.searchParams.get('objectId'), 'objectId');
     const label = (url.searchParams.get('label') ?? '').trim();
     const fileName = (url.searchParams.get('fileName') ?? `archive-${archiveId}`).slice(0, 260);
+    const engine = requireEngine(url.searchParams.get('engine'), config.localOcrEngine);
     const bytes = await readBody(request, config.limits.maxSourceBytes);
     if (!bytes.length) throw new ServiceError('Request body is empty', 'unsupported_file', false);
 
@@ -129,6 +187,7 @@ async function main(): Promise<void> {
       // Someone re-submitting a document through the UI is asking for a retry;
       // otherwise one terminal failure would lock that archive id out for good.
       retryTerminal: true,
+      ocr: engines[engine],
     });
 
     if (result.outcome === 'failed' || result.outcome === 'retry_wait') {
@@ -145,14 +204,19 @@ async function main(): Promise<void> {
     // A skip means these exact bytes are already indexed, so the stored OCR text
     // is read back rather than paying for the vision model a second time.
     const pages = result.pages ?? (result.documentId ? await ragStore.getDocumentPages(result.documentId) : []);
+    // What the work actually cost. On a skip that is the stored run duration, not
+    // the moments this request spent discovering there was nothing to do.
+    const totalMs = result.totalDurationMs ?? (result.documentId ? await ragStore.getDocumentDurationMs(result.documentId) : null);
     return {
       documentId: result.documentId ?? null,
       ragDocumentId: result.ragDocumentId ?? null,
       scopeId,
       reused: result.outcome === 'skipped',
-      modelid: config.ollama.ocrModel,
+      engine,
+      modelid: engine === 'ollama' ? config.ollama.ocrModel : `tesseract:${config.tesseract.langs[engine]}`,
       // Page 1 speaks for the document; a mixed-language scan is not worth a per-page field yet.
-      language: detectLanguage(pages[0]?.text ?? ''),
+      // Tesseract reports no language of its own, so its pages are read by script instead.
+      language: engine === 'ollama' ? detectLanguage(pages[0]?.text ?? '') : detectScript(pages[0]?.text ?? ''),
       // Same 0–100 scale Azure Document Intelligence reports. ponytail: not persisted,
       // so a reused (already-indexed) document reports null; add a documentpage
       // column if the score has to survive the re-submit.
@@ -164,11 +228,25 @@ async function main(): Promise<void> {
       })),
       content: pages.map((page) => `# Page ${page.pageIndex}\n\n${page.text}`).join('\n\n'),
       pageCount: pages.length,
+      totalMs,
       elapsedTimeMs: Date.now() - startedAt,
     };
   }
 
-  async function chat(request: http.IncomingMessage): Promise<Record<string, unknown>> {
+  /**
+   * Two ways to put documents in front of the model, chosen by the caller:
+   *
+   * - `full: true` sends every OCR page of every named document, in the order
+   *   they were selected. This is what "Analyze with AI" uses, so that the local
+   *   answer is drawn from the same evidence the cloud path sends. No embedding
+   *   call, no ranking, nothing silently dropped.
+   * - `full: false` (the default) embeds the question and retrieves the nearest
+   *   chunks. This is what the chat drawer uses, where a follow-up question is
+   *   narrow and the whole archive need not be re-read for it.
+   *
+   * The reply streams either way.
+   */
+  async function chat(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const startedAt = Date.now();
     const body = parseJson(await readBody(request, 1_048_576));
     const prompt = typeof body['prompt'] === 'string' ? body['prompt'].trim() : '';
@@ -177,31 +255,91 @@ async function main(): Promise<void> {
       ? body['documentIds'].map(Number).filter((value) => Number.isSafeInteger(value) && value > 0)
       : [];
     if (!documentIds.length) throw new ServiceError('documentIds must contain at least one ingested document', 'configuration', false);
+    const full = body['full'] === true;
     const topK = Number.isSafeInteger(Number(body['topK'])) && Number(body['topK']) > 0 ? Number(body['topK']) : config.ragTopK;
 
+    const { context, citations, empty } = full
+      ? await fullDocumentContext(documentIds)
+      : await retrievedContext(prompt, documentIds, topK);
+
+    if (empty) {
+      // Nothing to answer from. Still an SSE response, so the client has one
+      // code path rather than two.
+      return sendEventStream(response, (send) => {
+        send({ token: empty });
+        send({ done: true, citations: [], elapsedTimeMs: Date.now() - startedAt });
+        return Promise.resolve();
+      });
+    }
+
+    await sendEventStream(response, async (send) => {
+      await ollama.chat(prompt + RETRIEVAL_SYSTEM_SUFFIX, context, (token, thinking) =>
+        send(thinking ? { thinking: token } : { token }),
+      );
+      send({ done: true, citations, elapsedTimeMs: Date.now() - startedAt });
+      logger.info('local_chat_completed', {
+        documentIds: documentIds.length,
+        mode: full ? 'full' : 'retrieval',
+        sources: citations.length,
+        elapsedMs: Date.now() - startedAt,
+      });
+    });
+  }
+
+  /** Every page of every selected document, refused up front when it cannot fit. */
+  async function fullDocumentContext(documentIds: number[]): Promise<ChatContext> {
+    const documents = await Promise.all(documentIds.map(async (id) => ({ id, pages: await ragStore.getDocumentPages(id) })));
+    const withPages = documents.filter((document) => document.pages.length > 0);
+    if (!withPages.length) {
+      return { context: '', citations: [], empty: 'None of these documents have indexed OCR text. Re-run OCR in local mode, then try again.' };
+    }
+
+    const context = withPages
+      .map(({ id, pages }) => pages.map((page) => `[document ${id} · page ${page.pageIndex}]\n${page.text}`).join('\n\n'))
+      .join('\n\n---\n\n');
+
+    // Budgeted in characters, not words. The stored `tokencount` is a word count,
+    // and garbled or Hebrew OCR runs 2-3 tokens per word — budgeting on it would
+    // wave through a selection that Ollama then silently truncates, which is the
+    // failure this mode exists to remove.
+    const budget = Math.floor(config.ollama.numContext * ANSWER_HEADROOM * CHARS_PER_TOKEN);
+    if (context.length > budget) {
+      throw new ServiceError(
+        `Selected ${withPages.length} document(s) totalling ${context.length} characters, over the ${budget}-character budget ` +
+          `for a ${config.ollama.numContext}-token context. Select fewer documents, or raise OLLAMA_NUM_CTX.`,
+        'source_limit',
+        false,
+      );
+    }
+
+    return {
+      context,
+      citations: withPages.map(({ id, pages }) => ({
+        documentId: id,
+        pageStart: pages[0]!.pageIndex,
+        pageEnd: pages[pages.length - 1]!.pageIndex,
+      })),
+      empty: null,
+    };
+  }
+
+  /** The nearest chunks to the question, for narrow follow-ups. */
+  async function retrievedContext(prompt: string, documentIds: number[], topK: number): Promise<ChatContext> {
     const [queryEmbedding] = await ollama.embed([prompt]);
     if (!queryEmbedding) throw new ServiceError('Could not embed the prompt', 'ollama', true);
     const hits = await ragStore.searchChunks(queryEmbedding, documentIds, topK);
-
     if (!hits.length) {
-      return {
-        reply: 'No indexed content matched this question. Re-run OCR for these documents in local mode, then try again.',
-        citations: [],
-        elapsedTimeMs: Date.now() - startedAt,
-      };
+      return { context: '', citations: [], empty: 'No indexed content matched this question. Re-run OCR for these documents in local mode, then try again.' };
     }
-
-    const reply = await ollama.chat(prompt + RETRIEVAL_SYSTEM_SUFFIX, hits.map(excerpt).join('\n\n---\n\n'));
-    logger.info('local_chat_completed', { documentIds: documentIds.length, hits: hits.length, elapsedMs: Date.now() - startedAt });
     return {
-      reply,
+      context: hits.map(excerpt).join('\n\n---\n\n'),
       citations: hits.map((hit) => ({
         documentId: hit.documentId,
         pageStart: hit.pageStart,
         pageEnd: hit.pageEnd,
         distance: Number(hit.distance.toFixed(4)),
       })),
-      elapsedTimeMs: Date.now() - startedAt,
+      empty: null,
     };
   }
 
@@ -220,6 +358,37 @@ async function main(): Promise<void> {
       server.close();
       void ragStore.close().catch(() => undefined).then(() => process.exit(0));
     });
+  }
+}
+
+/**
+ * Streams Server-Sent Events. `write` is called with each frame; the browser
+ * reads `{token}` fragments followed by one `{done, citations, elapsedTimeMs}`.
+ *
+ * Headers go out before the model is called, so a failure partway through cannot
+ * be turned into an HTTP status any more — it is sent as a final `{error}` frame
+ * instead, and the client keeps the partial answer and says it was cut short.
+ * Silently ending the stream would render a half answer as if it were complete.
+ */
+async function sendEventStream(
+  response: http.ServerResponse,
+  produce: (send: (frame: Record<string, unknown>) => void) => Promise<void>,
+): Promise<void> {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+  });
+  const send = (frame: Record<string, unknown>): void => {
+    response.write(`data: ${JSON.stringify(frame)}\n\n`);
+  };
+  try {
+    await produce(send);
+  } catch (error) {
+    const safe = sanitizeError(error);
+    send({ error: safe.message, code: safe.code });
+  } finally {
+    response.end();
   }
 }
 
@@ -254,6 +423,15 @@ function parseJson(body: Buffer): Record<string, unknown> {
   } catch {
     throw new ServiceError('Request body must be a JSON object', 'configuration', false);
   }
+}
+
+function requireEngine(value: string | null, fallback: OcrEngineId): OcrEngineId {
+  if (value === null || value === '') return fallback;
+  const engine = OCR_ENGINE_IDS.find((candidate) => candidate === value);
+  if (!engine) {
+    throw new ServiceError(`engine must be one of ${OCR_ENGINE_IDS.join(', ')}`, 'configuration', false);
+  }
+  return engine;
 }
 
 function requirePositiveInteger(value: string | null, name: string): number {

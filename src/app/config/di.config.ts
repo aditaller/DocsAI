@@ -65,7 +65,19 @@ export const DI_CONFIG = {
     ingestEndpoint: '/api/local/ingest',
     chatEndpoint: '/api/local/chat',
     topK: 8,
-    label: 'Local RAG · Ollama',
+    label: 'Local RAG',
+    // Which engine reads the pages locally; sent as ?engine= on every ingest.
+    // Embedding and chat stay on Ollama either way. Tesseract is the default:
+    // it is an order of magnitude faster and the only one of the two that reads
+    // Hebrew reliably. It appears once per language set, because loading the
+    // Hebrew model for an English page makes that page worse, not better.
+    // The ids must match OCR_ENGINE_IDS in the service.
+    engines: [
+      { id: 'tesseract-heb', label: 'Tesseract HEB · heb+eng', short: 'Tesseract HEB', modelId: 'tesseract-heb' },
+      { id: 'tesseract-eng', label: 'Tesseract ENG · eng', short: 'Tesseract ENG', modelId: 'tesseract-eng' },
+      { id: 'ollama', label: 'Ollama Vision', short: 'Ollama', modelId: 'ollama' },
+    ] as OcrEngine[],
+    defaultEngineId: 'tesseract-heb',
   },
   ai: {
     models: [
@@ -80,6 +92,10 @@ export const DI_CONFIG = {
 
 export const findOcr = (id: string): OcrEngine =>
   DI_CONFIG.ocr.engines.find((e) => e.id === id) ?? DI_CONFIG.ocr.engines[0];
+
+/** Same lookup against whichever list the current mode offers. */
+export const findEngine = (engines: OcrEngine[], id: string): OcrEngine =>
+  engines.find((e) => e.id === id) ?? engines[0];
 
 export const findAi = (id: string): AiModel =>
   DI_CONFIG.ai.models.find((m) => m.id === id) ?? DI_CONFIG.ai.models[0];

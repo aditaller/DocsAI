@@ -172,8 +172,15 @@ test('searchChunks returns nothing when no valid document id is supplied', async
   await store.close();
 });
 
-test('chat posts to /api/chat and returns the message content', async () => {
+test('chat streams NDJSON tokens, forwards each one, and returns the joined answer', async () => {
   const calls: Array<{ url: string; body: unknown }> = [];
+  // Ollama frames arrive as newline-delimited JSON, and a network chunk can end
+  // mid-line — the second chunk here splits "answer" across a boundary.
+  const wire = [
+    '{"message":{"content":"  the "}}\n{"message":{"con',
+    'tent":"ans"}}\n',
+    '{"message":{"content":"wer  "}}\n{"done":true,"done_reason":"stop"}\n',
+  ];
   const client = new OllamaClient({
     baseUrl: new URL('http://127.0.0.1:11434'),
     ocrModel: 'vision',
@@ -181,27 +188,64 @@ test('chat posts to /api/chat and returns the message content', async () => {
     dimensions: 3,
     chatModel: 'chat-model',
     numContext: 16_384,
+    keepAlive: '1h',
     fetchImplementation: (async (input: URL | RequestInfo, init?: RequestInit) => {
       calls.push({ url: String(input), body: JSON.parse(String(init?.body)) });
-      return new Response(JSON.stringify({ message: { content: '  the answer  ' } }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const part of wire) controller.enqueue(encoder.encode(part));
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/x-ndjson' } },
+      );
     }) as typeof fetch,
   });
 
-  assert.equal(await client.chat('system text', 'user text'), 'the answer');
+  const tokens: string[] = [];
+  assert.equal(await client.chat('system text', 'user text', (t) => tokens.push(t)), 'the answer');
+  // The caller must see the fragments as they land, not one final blob.
+  assert.deepEqual(tokens, ['  the ', 'ans', 'wer  ']);
   assert.equal(calls[0]?.url, 'http://127.0.0.1:11434/api/chat');
   assert.deepEqual(calls[0]?.body, {
     model: 'chat-model',
-    stream: false,
+    stream: true,
     messages: [
       { role: 'system', content: 'system text' },
       { role: 'user', content: 'user text' },
     ],
     options: { num_ctx: 16_384 },
-    keep_alive: '4h',
+    keep_alive: '1h',
   });
+});
+
+test('chat without a token callback still returns the whole answer', async () => {
+  const client = new OllamaClient({
+    baseUrl: new URL('http://127.0.0.1:11434'),
+    ocrModel: 'vision',
+    embeddingModel: 'embed',
+    dimensions: 3,
+    chatModel: 'chat-model',
+    numContext: 16_384,
+    fetchImplementation: (async () =>
+      new Response('{"message":{"content":"one "}}\n{"message":{"content":"two"}}\n', { status: 200 })) as typeof fetch,
+  });
+  assert.equal(await client.chat('system', 'user'), 'one two');
+});
+
+test('chat reports an empty stream rather than returning a blank answer', async () => {
+  const client = new OllamaClient({
+    baseUrl: new URL('http://127.0.0.1:11434'),
+    ocrModel: 'vision',
+    embeddingModel: 'embed',
+    dimensions: 3,
+    chatModel: 'chat-model',
+    numContext: 16_384,
+    fetchImplementation: (async () => new Response('{"done":true,"done_reason":"length"}\n', { status: 200 })) as typeof fetch,
+  });
+  await assert.rejects(() => client.chat('system', 'user'), /done_reason=length/);
 });
 
 test('chat refuses to run when no chat model is configured', async () => {
@@ -241,7 +285,7 @@ test('the OCR request leaves the model its whole budget for transcription', asyn
   assert.deepEqual(Object.keys(sent).sort(), ['images', 'keep_alive', 'logprobs', 'model', 'options', 'prompt', 'stream', 'think']);
   assert.equal(sent['logprobs'], true);
   assert.match(String(sent['prompt']), /^Transcribe every piece of text.*Language:/s);
-  assert.equal(sent['keep_alive'], '4h');
+  assert.equal(sent['keep_alive'], '1h');
   assert.equal(sent['stream'], false);
   assert.equal(sent['think'], false);
   assert.deepEqual(sent['options'], { num_ctx: 16_384 });

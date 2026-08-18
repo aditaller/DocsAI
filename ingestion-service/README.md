@@ -38,21 +38,33 @@ It runs in two ways over the same pipeline:
    and embedding models, for example:
 
    ```powershell
-   ollama pull qwen3.6:35b-a3b
-   ollama pull qwen3-embedding:4b
+   ollama pull gpt-oss:20b
+   ollama pull qwen3-embedding:0.6b
    ```
 
-2. Install Poppler locally so `pdftoppm` is available for PDF inputs. A
-   Ghostscript-based wrapper is acceptable only when it has the same one-PNG-per-page
-   behavior and is configured as `PDFTOPPM_PATH`.
-3. Create a least-privilege SQL Server archive reader and PostgreSQL RAG writer.
-4. Copy `.env.example` to `.env`; set connection strings and replace the
+2. Install Poppler locally for PDF inputs — on Windows,
+   `winget install --id oschwartz10612.Poppler -e`. Point `PDFTOPPM_PATH` at the
+   absolute path of `pdftoppm`: that package puts it on `PATH` too, but a running
+   `npm run serve` never picks up a `PATH` change. `pdftotext` is taken from the
+   same directory, so both come from one setting. `GET /api/local/health` reports
+   `pdftoppm` once it is reachable. A Ghostscript-based wrapper is acceptable only
+   when it has the same one-PNG-per-page behavior.
+3. For the `tesseract` engine, run a container with tesseract and the language
+   data installed, and leave it up. It needs no published port and no mount —
+   the service reaches it with `docker exec -i`:
+
+   ```powershell
+   docker exec tesseract-ocr tesseract --list-langs   # expect at least eng, heb
+   ```
+
+4. Create a least-privilege SQL Server archive reader and PostgreSQL RAG writer.
+5. Copy `.env.example` to `.env`; set connection strings and replace the
    mapping with the real, verified source columns. `claimIdColumn` must resolve
    to the numeric, existing local `rag.claim.id` that documents and chunks will
    reference. Prefer a SQL binary `contentColumn`. If source revisions are
    available, configure `modifiedAtColumn` (rowversion or modified time) for cheap
    source-aware idempotence.
-5. Review the migration against the deployed `rag` schema, especially its documented
+6. Review the migration against the deployed `rag` schema, especially its documented
    `documentchunk.contentembedding` / `parsercode` HNSW assumption and the
    `ingestionrun.documentid` nullability change, then run it:
 
@@ -60,7 +72,7 @@ It runs in two ways over the same pipeline:
    psql $env:POSTGRES_CONNECTION_STRING -f migrations/001_rag_store.sql
    ```
 
-6. Install and verify:
+7. Install and verify:
 
    ```powershell
    npm install
@@ -107,6 +119,11 @@ legacy tables from concurrent workers.
 Each OCR page is stored in `rag.documentpage`; `rag.documentchunkpage` records every
 page covered by a chunk. Documents are idempotent by source archive + content hash
 (`archiveid` + `sha256`), so re-seeing the same bytes reuses the same document row.
+A run's fingerprint carries the OCR engine when it is not the original vision
+model, so the same bytes read by tesseract are a separate run rather than a
+skipped duplicate. When a run's fingerprint differs from the one recorded on the
+document, its pages and chunks replace the stored ones — re-running OCR changes
+what chat retrieves, not just what the UI displays.
 
 ## Local HTTP API
 
@@ -120,31 +137,55 @@ rule in the app's `proxy.conf.json`.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/local/health` | Reports PostgreSQL reachability, Ollama reachability, any missing models, and — with `?claimId=` — whether that record exists in `rag.claim`. Drives whether the UI offers the mode at all. |
-| `POST /api/local/ingest?archiveId=&claimId=&fileName=` | Raw bytes in the body. Renders, OCRs every page, chunks, embeds, and persists, then returns the per-page text. Identical bytes already indexed are reused rather than re-OCR'd. |
+| `GET /api/local/health` | Reports PostgreSQL reachability, Ollama reachability, any missing models, whether the tesseract container answers, and the configured default engine. Drives whether the UI offers the mode at all. Ollama gates `ok` on both engines: it embeds and answers even when tesseract reads the pages. |
+| `POST /api/local/ingest?archiveId=&objectType=&objectId=&label=&fileName=&engine=` | Raw bytes in the body. Renders, OCRs every page, chunks, embeds, and persists, then returns the per-page text. `engine` is `tesseract-heb`, `tesseract-eng`, or `ollama`, and defaults to `LOCAL_OCR_ENGINE`. Identical bytes already indexed **by the same engine** are reused rather than re-OCR'd. |
 | `POST /api/local/chat` | `{ prompt, documentIds, topK? }` → embeds the prompt, retrieves the nearest chunks from those documents only, and answers from them with page citations. |
 
 **This surface performs no authentication.** The `jwt` cookie the .NET API issues
 is not validated here. It binds to `127.0.0.1` for that reason and must never be
 exposed on a public interface or put behind a forwarding proxy.
 
-Documents must already exist in `gnr.archive` (so they have an archive ID) and
-their record must already exist in `rag.claim`. The health route reports the
-latter so a missing claim is visible before ingestion rather than failing on the
-foreign key mid-batch.
+Documents must already exist in `gnr.archive` (so they have an archive ID). The
+scope row in `rag.claim` is created on first ingest from `objectType`/`objectId`,
+so no record has to be provisioned in advance.
 
 ## Operational limitations
 
-- PDF rendering uses the locally installed `pdftoppm`; Office formats are
-  intentionally unsupported.
+- A PDF is read from its own text layer with `pdftotext` when every page carries
+  one, which takes milliseconds and is exact. Only a scan reaches `pdftoppm` and
+  an OCR engine. The test is all-or-nothing per document: one page thin enough to
+  look scanned sends the whole file to OCR, which is slower but never silently
+  stores a near-empty page. Office formats are intentionally unsupported.
 - **Hebrew is not supported by the local vision models tested.** Measured against
   Azure Document Intelligence output for the same scan, `qwen3.6:35b-a3b` reached
   18% word recall and `qwen3-vl:4b` 4% (the latter degenerating into a repetition
-  loop). Both produce fluent-looking Hebrew that is largely invented. Route Hebrew
-  documents to the Azure path; the local path is for Latin-script documents.
-- OCR quality is determined by the selected local vision model. There is no
-  remote fallback and no hosted endpoint. A vision model will also invent text
-  for a blank or near-blank page rather than returning nothing.
+  loop). Both produce fluent-looking Hebrew that is largely invented. Use the
+  `tesseract-heb` engine for Hebrew; it is also faster than the vision model by
+  roughly an order of magnitude.
+- **Pick the tesseract engine that matches the document.** Languages are loaded,
+  not detected, and every loaded language competes for each glyph. `tesseract-heb`
+  (`heb+eng`) reads a Hebrew document including its Latin dates and amounts;
+  dropping `eng` from that set turns `15/06/2025` into `5"` and `1,500.00` into
+  `10-00`. `tesseract-eng` (`eng`) exists because the reverse is also true: an
+  English document is read better with the Hebrew model unloaded.
+- The tesseract engine shells out to `docker exec -i $TESSERACT_CONTAINER`, so
+  the Docker CLI must be on this process's PATH and the container must be
+  running. It needs no published port and no mount: the page image goes in on
+  stdin and TSV comes back on stdout. Confidence is the mean of the per-word
+  scores in that TSV; language is inferred from the script, since tesseract is
+  told which languages to load rather than reporting what it found.
+- `PDF_RENDER_DPI` is the one lever that matters to tesseract. It defaults to
+  poppler's 150; 300 reads small Hebrew type appreciably better and costs the
+  vision model extra image tokens.
+- OCR quality is determined by the selected engine. There is no remote fallback
+  and no hosted endpoint. A vision model will also invent text for a blank or
+  near-blank page rather than returning nothing.
+- Switching engines re-reads the pages and **replaces** what chat retrieves:
+  `rag.document` still keeps one row per `(archiveid, sha256)`, so the second
+  engine's pages, chunks and embeddings overwrite the first engine's under the
+  same document ID. The two engines' text cannot be queried side by side; the
+  most recent run wins. Widen `ux_document_archive_sha256` to include
+  `sourcefingerprint` if both have to be retrievable at once.
 - Model size is a poor predictor of speed here. `qwen3.6:35b-a3b` needs 23 GB and
   runs 42% on the CPU of a 16 GB card, yet is roughly four times faster than the
   3.3 GB `qwen3-vl:4b` that fits entirely in VRAM, because it is a Mixture-of-

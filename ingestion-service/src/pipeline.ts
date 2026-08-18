@@ -6,7 +6,19 @@ import type { RagStore } from './rag-store.js';
 import { retryDelayMs } from './retry.js';
 import type { ArchiveReader } from './archive-reader.js';
 import type { PageRenderer } from './renderer.js';
-import type { ArchiveRecord, SourceFile, TextPage } from './types.js';
+import type { ArchiveRecord, OcrEngineChoice, SourceFile, TextPage } from './types.js';
+
+/**
+ * The engine every document was read by until tesseract arrived. Its runs keep
+ * the original fingerprint format, so nothing already indexed is re-ingested.
+ */
+const ORIGINAL_ENGINE_ID = 'ollama';
+
+interface RunOptions {
+  retryTerminal?: boolean;
+  /** Overrides the injected OCR client for this one document. */
+  ocr?: OcrEngineChoice;
+}
 
 export interface IngestionResult {
   archiveId: number;
@@ -15,6 +27,12 @@ export interface IngestionResult {
   ragDocumentId?: number;
   /** Present only on a fresh `completed` run; a skip reuses what is already stored. */
   pages?: TextPage[];
+  /**
+   * Wall time for this run: render, OCR, chunk, embed and persist. Absent on a
+   * skip, where nothing was processed — the stored run duration is the answer
+   * there, and only the store has it.
+   */
+  totalDurationMs?: number;
   /**
    * Why a run did not complete. Already sanitized, so callers may surface it.
    * Without this the HTTP layer can only report that something failed, which
@@ -31,7 +49,10 @@ export class IngestionPipeline {
       archiveReader?: ArchiveReader;
       ragStore: RagStore;
       renderer: PageRenderer;
+      /** Embeds every chunk, and reads the pages too unless `ocr` overrides it. */
       ollama: OcrEmbedder;
+      /** The engine this process runs by default. Absent means the Ollama vision model. */
+      ocr?: OcrEngineChoice;
       mappingVersion: string;
       embeddingDimensions: number;
       chunkMaxCharacters: number;
@@ -89,14 +110,14 @@ export class IngestionPipeline {
    * from the archive route), so SQL Server is never touched. Everything after
    * the load — idempotence, run states, retry classification — is shared.
    */
-  async ingestSource(source: SourceFile, options: { retryTerminal?: boolean } = {}): Promise<IngestionResult> {
+  async ingestSource(source: SourceFile, options: RunOptions = {}): Promise<IngestionResult> {
     return this.run(source.archiveId, async () => source, options);
   }
 
   private async run(
     archiveId: number,
     load: () => Promise<SourceFile>,
-    options: { retryTerminal?: boolean } = {},
+    options: RunOptions = {},
   ): Promise<IngestionResult> {
     let jobId: number | undefined;
     let attempts = 0;
@@ -104,7 +125,12 @@ export class IngestionPipeline {
       const totalStartedAt = Date.now();
       const source = await load();
       const sourceHash = contentHash(source.bytes);
-      const sourceFingerprint = source.sourceRevision ? `source:${source.sourceRevision}` : `content:${sourceHash}`;
+      const engine = options.ocr ?? this.dependencies.ocr;
+      // The engine is part of the run's identity: without it, re-submitting a
+      // document to compare engines would match the finished run and return the
+      // other engine's text instead of reading the page again.
+      const engineTag = engine && engine.id !== ORIGINAL_ENGINE_ID ? `@${engine.id}` : '';
+      const sourceFingerprint = (source.sourceRevision ? `source:${source.sourceRevision}` : `content:${sourceHash}`) + engineTag;
       const job = await this.dependencies.ragStore.createJob(source.archiveId, source.sourceClaimId, this.dependencies.mappingVersion, sourceFingerprint, sourceHash);
       jobId = job.id;
       const claimed = await this.dependencies.ragStore.claimJob(job.id, options.retryTerminal === true);
@@ -121,11 +147,16 @@ export class IngestionPipeline {
 
       const parseStartedAt = Date.now();
       const rendered = await this.dependencies.renderer.render(source);
-      const pages = [];
-      for (const page of rendered.pages) pages.push(await this.dependencies.ollama.recognizePage(page));
+      const recognizer = engine?.recognizer ?? this.dependencies.ollama;
+      // A digital PDF arrives already transcribed. Only a scan reaches an OCR
+      // engine, and then strictly one page at a time.
+      const pages: TextPage[] = rendered.textPages ?? [];
+      if (!rendered.textPages) {
+        for (const page of rendered.pages) pages.push(await recognizer.recognizePage(page));
+      }
       const parseDurationMs = Date.now() - parseStartedAt;
       const markdownFullText = pages.map((page) => `# Page ${page.pageIndex}\n\n${page.text}`).join('\n\n');
-      await this.dependencies.ragStore.markChunking(job.id, rendered.pages.length, markdownFullText, parseDurationMs);
+      await this.dependencies.ragStore.markChunking(job.id, pages.length, markdownFullText, parseDurationMs);
 
       const chunks = chunkPages(pages, this.dependencies.chunkMaxCharacters, this.dependencies.chunkOverlapCharacters);
       if (chunks.length === 0) throw new ServiceError('OCR produced no indexable text', 'ollama', false);
@@ -134,6 +165,7 @@ export class IngestionPipeline {
       const embeddingStartedAt = Date.now();
       const embeddings = await this.dependencies.ollama.embed(chunks.map((chunk) => chunk.content));
       const embedDurationMs = Date.now() - embeddingStartedAt;
+      const totalDurationMs = Date.now() - totalStartedAt;
       const persisted = await this.dependencies.ragStore.persistDocument({
         jobId: job.id,
         ragClaimId: claimed.ragClaimId,
@@ -150,11 +182,11 @@ export class IngestionPipeline {
         embeddings,
         embeddingDimensions: this.dependencies.embeddingDimensions,
         completion: {
-          pageCount: rendered.pages.length,
+          pageCount: pages.length,
           chunkCount: chunks.length,
           parseDurationMs,
           embedDurationMs,
-          totalDurationMs: Date.now() - totalStartedAt,
+          totalDurationMs,
         },
       });
       this.dependencies.logger.info('ingestion_completed', {
@@ -163,7 +195,9 @@ export class IngestionPipeline {
         documentId: persisted.id,
         ragDocumentId: persisted.ragDocumentId,
         chunkCount: chunks.length,
-        pageCount: rendered.pages.length,
+        pageCount: pages.length,
+        // Answers "why was that instant?" without reading the timings.
+        textLayer: rendered.textPages !== undefined,
         reused: persisted.alreadyExisted,
       });
       return {
@@ -172,6 +206,7 @@ export class IngestionPipeline {
         documentId: persisted.id,
         ragDocumentId: persisted.ragDocumentId,
         pages,
+        totalDurationMs,
       };
     } catch (error) {
       const safe = sanitizeError(error);

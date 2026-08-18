@@ -7,7 +7,12 @@ import type { IngestionJobState, TextChunk, TextPage } from './types.js';
 
 const SOURCE_LOCK = 271828182;
 const SCOPE_LOCK = 141421356;
-const OLLAMA_PARSER_CODE = 'OLLAMA_QWEN3_6_LOCAL';
+/**
+ * Marks a row as belonging to this local pipeline, not to a particular OCR
+ * engine — tesseract-read chunks carry it too. The value is a search filter in
+ * searchChunks, so changing it would orphan every chunk already embedded.
+ */
+const LOCAL_PARSER_CODE = 'OLLAMA_QWEN3_6_LOCAL';
 const RAG_SCHEMA = 'rag';
 
 /**
@@ -99,6 +104,7 @@ export interface RagStore {
   failJob(jobId: number, state: 'RETRY_WAIT' | 'FAILED', error: { code: string; message: string }, nextAttemptAt?: Date): Promise<void>;
   searchChunks(embedding: number[], documentIds: number[], topK: number): Promise<ChunkHit[]>;
   getDocumentPages(documentId: number): Promise<TextPage[]>;
+  getDocumentDurationMs(documentId: number): Promise<number | null>;
   resolveScope(objectType: string, objectId: number, label: string): Promise<number>;
   close(): Promise<void>;
 }
@@ -179,7 +185,7 @@ export class PostgresRagStore implements RagStore {
         [
           this.options.writeUserId,
           sourceClaimId,
-          OLLAMA_PARSER_CODE,
+          LOCAL_PARSER_CODE,
           this.options.embeddingModel,
           this.options.embeddingDimensions,
           sourceArchiveId,
@@ -252,25 +258,48 @@ export class PostgresRagStore implements RagStore {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock($1)', [SOURCE_LOCK]);
-      const existing = await client.query<{ id: number | string }>(
-        `SELECT id FROM ${this.table('document')} WHERE archiveid = $1 AND sha256 = $2`,
+      const existing = await client.query<{ id: number | string; sourcefingerprint: string | null }>(
+        `SELECT id, sourcefingerprint FROM ${this.table('document')} WHERE archiveid = $1 AND sha256 = $2`,
         [input.sourceArchiveId, input.contentHash],
       );
+      let documentId: number;
       if (existing.rows[0]) {
-        const documentId = Number(existing.rows[0].id);
-        await this.completeRunInTransaction(client, input.jobId, documentId, input.completion);
-        await client.query('COMMIT');
-        return { id: documentId, ragDocumentId: documentId, alreadyExisted: true };
+        documentId = Number(existing.rows[0].id);
+        if (existing.rows[0].sourcefingerprint === input.sourceFingerprint) {
+          // The same bytes read the same way. Nothing to replace.
+          await this.completeRunInTransaction(client, input.jobId, documentId, input.completion);
+          await client.query('COMMIT');
+          return { id: documentId, ragDocumentId: documentId, alreadyExisted: true };
+        }
+        // Same bytes, different fingerprint: another OCR engine (or mapping
+        // version) just read this file. Its text has to replace what retrieval
+        // sees, otherwise re-running OCR would change only the text shown in the
+        // drawer while chat kept answering from the previous engine's chunks.
+        // ponytail: one document row per (archiveid, sha256) still, so this is a
+        // replacement, not a second copy — the engines cannot be queried side by
+        // side. Widen ux_document_archive_sha256 to include sourcefingerprint if
+        // they ever have to be.
+        await client.query(
+          `DELETE FROM ${this.table('documentchunkpage')}
+           WHERE documentchunkid IN (SELECT id FROM ${this.table('documentchunk')} WHERE documentid = $1)`,
+          [documentId],
+        );
+        await client.query(`DELETE FROM ${this.table('documentchunk')} WHERE documentid = $1`, [documentId]);
+        await client.query(`DELETE FROM ${this.table('documentpage')} WHERE documentid = $1`, [documentId]);
+        await client.query(
+          `UPDATE ${this.table('document')} SET mappingversion = $2, sourcefingerprint = $3 WHERE id = $1`,
+          [documentId, input.mappingVersion, input.sourceFingerprint],
+        );
+      } else {
+        const inserted = await client.query<{ id: number | string }>(
+          `INSERT INTO ${this.table('document')} (
+             createuserid, claimid, filename, originalfilename, mimetype, sizebytes, sha256, storagepath,
+             archiveid, mappingversion, sourcefingerprint
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+          [this.options.writeUserId, input.ragClaimId, input.sourceName, input.sourceName, input.sourceMimeType, input.sourceSizeBytes, input.contentHash, input.sourceStoragePath, input.sourceArchiveId, input.mappingVersion, input.sourceFingerprint],
+        );
+        documentId = Number(inserted.rows[0]!.id);
       }
-
-      const inserted = await client.query<{ id: number | string }>(
-        `INSERT INTO ${this.table('document')} (
-           createuserid, claimid, filename, originalfilename, mimetype, sizebytes, sha256, storagepath,
-           archiveid, mappingversion, sourcefingerprint
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-        [this.options.writeUserId, input.ragClaimId, input.sourceName, input.sourceName, input.sourceMimeType, input.sourceSizeBytes, input.contentHash, input.sourceStoragePath, input.sourceArchiveId, input.mappingVersion, input.sourceFingerprint],
-      );
-      const documentId = Number(inserted.rows[0]!.id);
 
       const pageIds = new Map<number, number>();
       for (const page of input.pages) {
@@ -293,7 +322,7 @@ export class PostgresRagStore implements RagStore {
              createuserid, ingestionrunid, documentid, claimid, parsercode, chunkindex,
              tokencount, charcount, contenttext, contentembedding
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector) RETURNING id`,
-          [this.options.writeUserId, input.jobId, documentId, input.ragClaimId, OLLAMA_PARSER_CODE, chunk.index, tokenCount(chunk.content), chunk.content.length, chunk.content, vectorLiteral(vector)],
+          [this.options.writeUserId, input.jobId, documentId, input.ragClaimId, LOCAL_PARSER_CODE, chunk.index, tokenCount(chunk.content), chunk.content.length, chunk.content, vectorLiteral(vector)],
         );
         const chunkId = Number(chunkRow.rows[0]!.id);
         for (let page = chunk.pageStart; page <= chunk.pageEnd; page += 1) {
@@ -350,7 +379,7 @@ export class PostgresRagStore implements RagStore {
        LEFT JOIN ${this.table('documentpage')} p ON p.id = cp.documentpageid
        GROUP BY h.id, h.documentid, h.chunkindex, h.contenttext, h.distance
        ORDER BY h.distance`,
-      [vectorLiteral(embedding), OLLAMA_PARSER_CODE, ids, limit],
+      [vectorLiteral(embedding), LOCAL_PARSER_CODE, ids, limit],
     ).catch((error: unknown) => {
       throw databaseError(error, 'Chunk search failed');
     });
@@ -373,6 +402,23 @@ export class PostgresRagStore implements RagStore {
       [documentId],
     );
     return result.rows.map((row) => ({ pageIndex: Number(row.pagenumber), text: row.ocrtext }));
+  }
+
+  /**
+   * How long this document took to process, from the newest run that recorded a
+   * duration. Re-attaching an already-indexed document skips the work, so the
+   * board would otherwise show the few milliseconds the skip itself took.
+   */
+  async getDocumentDurationMs(documentId: number): Promise<number | null> {
+    if (!Number.isSafeInteger(documentId) || documentId < 1) return null;
+    const result = await this.pool.query<{ totaldurationms: number | string }>(
+      `SELECT totaldurationms FROM ${this.table('ingestionrun')}
+       WHERE documentid = $1 AND totaldurationms IS NOT NULL
+       ORDER BY id DESC LIMIT 1`,
+      [documentId],
+    );
+    const stored = Number(result.rows[0]?.totaldurationms);
+    return Number.isFinite(stored) ? stored : null;
   }
 
   /**

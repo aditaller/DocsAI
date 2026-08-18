@@ -59,8 +59,14 @@ export class TopBarComponent {
     if (!h.postgres) return 'PostgreSQL/pgvector is unreachable or the rag schema is not migrated';
     if (!h.ollama) return 'Ollama is unreachable at its configured loopback address';
     if (h.missingModels.length) return `Ollama is missing: ${h.missingModels.join(', ')}`;
+    // The tesseract container is optional: Ollama can still read the pages, so
+    // this warns rather than disabling the mode.
+    if (!h.tesseract) return 'Ready, but the tesseract container is not answering — pick Ollama Vision in the OCR board';
+    // Same shape as the tesseract warning: images still work, so this informs
+    // rather than blocks. Without it a PDF only fails once it is already uploaded.
+    if (!h.pdftoppm) return 'Ready for images, but PDFs cannot be read — install Poppler and set PDFTOPPM_PATH';
     // No per-record check: the scope row is created on first ingest.
-    return 'Ollama vision OCR into pgvector, answers from the local model';
+    return 'Local OCR into pgvector, answers from the local model';
   });
 
   logout(e: MouseEvent) {

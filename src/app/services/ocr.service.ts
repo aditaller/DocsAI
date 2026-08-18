@@ -6,6 +6,7 @@ export interface OcrResult {
   text: string;
   confidence: number | null; // overall 0–100; null when the engine reports no score
   pages: number;
+  totalMs: number | null; // processing time the backend reports; null when it reports none
   raw?: RawOcr;
   api?: OcrApiResponse; // full backend payload, kept for "Save OCR data"
 }
@@ -57,6 +58,7 @@ export class OcrService {
       text: body,
       confidence: r.confidence,
       pages: r.pages,
+      totalMs: typeof r.elapsedTimeMs === 'number' ? r.elapsedTimeMs : null,
       // ponytail: backend gives no per-token confidence, so lowConf stays 0.
       // Add a real count if the API starts returning token-level scores.
       raw: { pages: r.pages, avgConf: r.confidence, lowConf: 0, lines },
