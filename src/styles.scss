@@ -833,6 +833,21 @@ tr.row-processing td { background: none; animation: none; }
   text-wrap: pretty;
 }
 .resp-body .summary .hl { color: var(--ink); font-weight: 600; }
+/* page references in an answer open that page's OCR text */
+.resp-body .summary .page-ref {
+  color: var(--signal);
+  font-family: var(--font-mono); font-size: 0.82em;
+  text-decoration: none; border-bottom: 1px solid currentColor;
+  cursor: pointer; white-space: nowrap;
+}
+.resp-body .summary .page-ref:hover { background: rgba(0, 0, 0, 0.05); }
+/* companion link: the original PDF, opened at that page */
+.resp-body .summary .page-open {
+  color: var(--ink-4);
+  font-size: 0.78em; text-decoration: none;
+  margin-inline-start: 3px; cursor: pointer;
+}
+.resp-body .summary .page-open:hover { color: var(--signal); }
 
 .resp-section-title {
   display: flex; align-items: center; gap: 12px;

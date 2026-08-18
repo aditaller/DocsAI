@@ -53,7 +53,7 @@ const environmentSchema = z.object({
   OLLAMA_KEEP_ALIVE: z.string().min(1).default('1h'),
   // Which engine reads the pages. The HTTP server lets a request override this
   // per document; the batch CLI has no such caller and runs whatever is set here.
-  LOCAL_OCR_ENGINE: z.enum(OCR_ENGINE_IDS).default('tesseract-heb'),
+  LOCAL_OCR_ENGINE: z.enum(OCR_ENGINE_IDS).default('tesseract-auto'),
   TESSERACT_CONTAINER: z.string().min(1).default('tesseract-ocr'),
   // Order matters: the first language is the primary one. `heb+eng` reads Hebrew
   // documents that carry Latin names, numbers and stamps — dropping `eng` there
@@ -66,6 +66,8 @@ const environmentSchema = z.object({
   PDFTOPPM_PATH: z.string().min(1).default('pdftoppm'),
   // poppler's own default. Tesseract wants 300 for Hebrew; the vision model pays
   // for the extra pixels in image tokens, so this is left where it was.
+  // Script detection reads the same render, and a 150dpi Hebrew scan is also
+  // where OSD is likeliest to answer below MIN_SCRIPT_CONFIDENCE.
   PDF_RENDER_DPI: z.coerce.number().int().min(72).max(600).default(150),
   MAX_SOURCE_BYTES: z.coerce.number().int().positive().max(1_073_741_824).default(52_428_800),
   MAX_PAGES: z.coerce.number().int().positive().max(10_000).default(100),

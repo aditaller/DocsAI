@@ -11,7 +11,7 @@ import { IconComponent } from './shared';
       <form class="login-card" (submit)="submit($event, u.value, p.value)">
         <div class="eyebrow">
         <di-icon name="layers" [size]="20" /> &nbsp;
-        <img src="assets/taldar-logo-white.png" alt="TALDAR" width="80" style="top: 4px; position: relative;" /> · Document Intelligence</div>
+        <img src="assets/taldar-logo-white.png" alt="TALDAR" width="80" style="top: 4px; position: relative;" /> · Document Ingest</div>
         <h1>Sign in</h1>
 
         <label class="login-field">

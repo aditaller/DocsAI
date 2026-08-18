@@ -30,6 +30,14 @@ export interface LocalChatResult {
   reply: string;
   citations: Citation[];
   elapsedTimeMs: number;
+  /**
+   * How the answer was actually sourced. A `full` request downgrades itself to
+   * `retrieval` when the document exceeds the context budget, so this can differ
+   * from what was asked for.
+   */
+  mode: 'full' | 'retrieval';
+  /** Set only when a full-document request fell back, with the sizes that forced it. */
+  fellBack?: { chars: number; budget: number };
 }
 
 /** A stream that failed after some tokens had already been shown. */
@@ -152,6 +160,8 @@ export class LocalRagService {
     let reply = '';
     let citations: Citation[] = [];
     let elapsedTimeMs = 0;
+    let mode: 'full' | 'retrieval' = options.full === true ? 'full' : 'retrieval';
+    let fellBack: { chars: number; budget: number } | null = null;
     let failure: string | null = null;
 
     for (;;) {
@@ -180,6 +190,8 @@ export class LocalRagService {
         if (event['done']) {
           citations = event['citations'] ?? [];
           elapsedTimeMs = Number(event['elapsedTimeMs'] ?? 0);
+          mode = event['mode'] === 'full' ? 'full' : 'retrieval';
+          fellBack = event['fellBack'] ?? null;
         }
       }
     }
@@ -187,7 +199,7 @@ export class LocalRagService {
     // The stream carries its own failures once headers are out. Never let a
     // partial answer pass as a complete one.
     if (failure) throw new LocalChatError(failure, reply);
-    return { reply: reply.trim(), citations, elapsedTimeMs };
+    return { reply: reply.trim(), citations, elapsedTimeMs, mode, ...(fellBack ? { fellBack } : {}) };
   }
 
   /** Drives whether the toggle is offered at all. */

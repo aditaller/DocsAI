@@ -84,7 +84,7 @@ const HEBREW_INSTRUCTION =
             [jobs]="jobs()"
             [engines]="engineOptions()"
             [engineId]="activeEngineId()"
-            (viewRaw)="rawJob.set($event)"
+            (viewRaw)="openRaw($event)"
             (saveOcr)="onSaveOcr($event)"
             (removeJob)="onRemoveJob($event)"
             (rerun)="onRerunOcr($event)"
@@ -112,10 +112,13 @@ const HEBREW_INSTRUCTION =
             [response]="response()"
             [analyzing]="analyzing()"
             [canChat]="canChat()"
+            [pdfDocNames]="pdfDocNames()"
             (exportPdf)="onExport()"
             (save)="onSave()"
             (rerun)="onRerun()"
             (chat)="chatOpen.set(true)"
+            (openPages)="onOpenPages($event)"
+            (openOriginal)="onOpenOriginal($event)"
           />
         </div>
       </div>
@@ -126,7 +129,7 @@ const HEBREW_INSTRUCTION =
         (toggleSelect)="onToggleDoc($event)"
         (close)="previewDoc.set(null)"
       />
-      <di-raw-ocr-drawer [job]="rawJob()" [ocrModelId]="ocrEngine().modelId" (close)="rawJob.set(null)" />
+      <di-raw-ocr-drawer [job]="rawJob()" [pages]="rawPages()" [ocrModelId]="ocrEngine().modelId" (close)="openRaw(null)" />
       <di-chat-drawer [open]="chatOpen()" [docNames]="chatDocs()" [ask]="askDocs" (close)="chatOpen.set(false)" />
       <di-toasts [toasts]="toasts()" />
     </div>
@@ -171,6 +174,7 @@ export class App {
 
   // ---- Drawers / modal / toasts ----
   rawJob = signal<Job | null>(null);
+  rawPages = signal<[number, number] | null>(null); // set when the drawer was opened from a page reference
   chatOpen = signal(false);
   previewDoc = signal<Doc | null>(null);
   toasts = signal<Toast[]>([]);
@@ -194,6 +198,9 @@ export class App {
     return r ? done.filter((j) => r.docNames.includes(j.name)) : done;
   });
   chatDocs = computed(() => this.chatJobs().map((j) => j.name));
+  // Docs the "open at this page" link can serve: a PDF (only format with a page
+  // fragment) that is still loadable as bytes or an archive path.
+  pdfDocNames = computed(() => this.docs().filter((d) => d.type === 'pdf' && (d.file || d.path)).map((d) => d.name));
   canChat = computed(() => this.chatJobs().some((j) => j.ragDocumentId != null));
 
   /** Bound so the drawer can hold it as a plain input; routes questions through the active engine. */
@@ -339,9 +346,44 @@ export class App {
     }
   }
 
-  private openBlob(blob: Blob) {
+  /**
+   * A page reference's companion link: the original PDF, opened at that page.
+   *
+   * Deliberately not onOpenDoc's route. The archive endpoint answers as a
+   * download, and a downloaded file is handed to Adobe, which never sees a
+   * #page= fragment. Fetching the bytes and typing them application/pdf puts
+   * the document in Chrome's own viewer, where the fragment means something.
+   */
+  async onOpenOriginal(ref: { docName: string; page: number }) {
+    const doc = this.docs().find((d) => d.name === ref.docName);
+    if (!doc) {
+      this.addToast(`${ref.docName} is no longer loaded`, 'info');
+      return;
+    }
+    try {
+      const file = await this.resolveFile(doc);
+      this.openBlob(new Blob([file], { type: 'application/pdf' }), `#page=${ref.page}`, doc.name);
+    } catch (err) {
+      this.addToast(err instanceof Error ? err.message : `Could not open ${ref.docName}`, 'error');
+    }
+  }
+
+  private openBlob(blob: Blob, hash = '', name = '') {
     const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
+    // Chrome ignores #page= when a blob: URL is the tab's own document, but
+    // honours it on a frame's src — so a page-targeted open gets a blank
+    // same-origin tab holding the PDF in a full-bleed iframe. Embedding also
+    // survives the "download PDFs instead of opening them" Chrome setting.
+    // Without a page, the blob opens directly and the tab keeps its normal URL.
+    const win = window.open(hash ? '' : url, '_blank');
+    if (hash && win) {
+      win.document.write(
+        `<title>${name}</title>` +
+          `<style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%}</style>` +
+          `<iframe src="${url}${hash}"></iframe>`,
+      );
+      win.document.close();
+    }
     // ponytail: fixed 60s before revoke; enough for the new tab to load any doc type.
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
@@ -553,6 +595,22 @@ export class App {
     if (t && t.text) this.prompt.set(t.text);
   }
 
+  /** One entry point for the raw-OCR drawer, so a page range never survives the next open. */
+  openRaw(job: Job | null, pages: [number, number] | null = null) {
+    this.rawPages.set(pages);
+    this.rawJob.set(job);
+  }
+
+  /** A page reference clicked in the answer: open that document's OCR at those pages. */
+  onOpenPages(ref: { docName: string; from: number; to: number }) {
+    const job = this.jobs().find((j) => j.name === ref.docName && j.status === 'completed');
+    if (!job) {
+      this.addToast(`${ref.docName} is no longer loaded`, 'info');
+      return;
+    }
+    this.openRaw(job, [ref.from, ref.to]);
+  }
+
   async onAnalyze(hebrew = false) {
     const sel = this.jobs().filter((j) => this.llmSelected().includes(j.jobId) && j.status === 'completed');
     if (!sel.length) {
@@ -665,7 +723,18 @@ export class App {
     console.log(
       `local ${full ? 'analyze' : 'chat'}: ${ids.length} doc(s), ${result.citations.length} source(s), server ${result.elapsedTimeMs}ms`,
     );
-    if (!result.citations.length) return result.reply;
+
+    // A document too large for the context is answered from its nearest excerpts
+    // instead of every page. That is a weaker answer than Analyze normally gives,
+    // so it is stated rather than left for the reader to infer from the citations.
+    const note =
+      full && result.mode === 'retrieval'
+        ? `_Answered from the most relevant excerpts: this document is ${result.fellBack?.chars.toLocaleString() ?? 'too many'} characters, over the ${result.fellBack?.budget.toLocaleString() ?? ''} the model can read at once._
+
+`
+        : '';
+    if (note) this.addToast('Document too large to read whole - answered from the closest excerpts', 'info');
+    if (!result.citations.length) return note + result.reply;
 
     const names = new Map(sel.map((j) => [j.ragDocumentId, j.name]));
     const sources = result.citations
@@ -674,7 +743,7 @@ export class App {
         return `${names.get(c.documentId) ?? `document ${c.documentId}`} ${pages}`;
       })
       .filter((value, index, all) => all.indexOf(value) === index);
-    return `${result.reply}\n\nSources: ${sources.join(' · ')}`;
+    return `${note}${result.reply}\n\nSources: ${sources.join(' · ')}`;
   }
 
   /**

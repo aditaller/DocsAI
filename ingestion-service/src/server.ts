@@ -9,7 +9,7 @@ import { averageConfidence, detectLanguage, OllamaClient, toPercent } from './ol
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore, type ChunkHit } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
-import { detectScript, TesseractClient } from './tesseract.js';
+import { createTesseractRecognizer, detectScript, TesseractClient } from './tesseract.js';
 import { OCR_ENGINE_IDS, type OcrEngineChoice, type OcrEngineId, type TextPage } from './types.js';
 
 const HOST = '127.0.0.1';
@@ -36,6 +36,12 @@ const CHARS_PER_TOKEN = 3.0;
 interface ChatContext {
   context: string;
   citations: Array<{ documentId: number; pageStart: number; pageEnd: number; distance?: number }>;
+  /**
+   * Set when a full-document selection exceeded the context budget. Reported
+   * rather than thrown, so the caller can fall back to retrieval instead of
+   * failing  and can tell the user which of the two it got.
+   */
+  overBudget?: { chars: number; budget: number };
   /** Set when there is nothing to answer from; carries the message to show. */
   empty: string | null;
 }
@@ -80,18 +86,20 @@ async function main(): Promise<void> {
     numContext: config.ollama.numContext,
     keepAlive: config.ollama.keepAlive,
     onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
+    // Logged from the client rather than carried back to the request: the value
+    // arrives mid-stream, and logging it where it lands keeps two concurrent
+    // chats from attributing each other's counts.
+    onPromptTokens: (tokens) =>
+      logger.info('chat_prompt_tokens', { tokens, contextLimit: config.ollama.numContext, allowance: Math.floor(config.ollama.numContext * ANSWER_HEADROOM) }),
   });
-  // One client per language set — the languages are fixed when the engine is
-  // built, so a request only ever names an engine, never a language spec.
+  // Health only: proves the container answers. The engines below build their own,
+  // because tesseract-auto remembers the script it read and two concurrent
+  // uploads must not share that memory.
   const tesseractHeb = new TesseractClient({ container: config.tesseract.container, langs: config.tesseract.langs['tesseract-heb'] });
-  const tesseractEng = new TesseractClient({ container: config.tesseract.container, langs: config.tesseract.langs['tesseract-eng'] });
   // Every ingest names its engine; the request may override the configured one
   // per document, which is how they are compared on the same scan.
-  const engines: Record<OcrEngineId, OcrEngineChoice> = {
-    ollama: { id: 'ollama', recognizer: ollama },
-    'tesseract-heb': { id: 'tesseract-heb', recognizer: tesseractHeb },
-    'tesseract-eng': { id: 'tesseract-eng', recognizer: tesseractEng },
-  };
+  const engineFor = (id: OcrEngineId): OcrEngineChoice =>
+    id === 'ollama' ? { id, recognizer: ollama } : { id, recognizer: createTesseractRecognizer(id, config.tesseract) };
   // Held in a local rather than inlined, so health() can probe the binary.
   const pdfRenderer = new PopplerPdfRenderer({
     executable: config.pdfToPpmPath,
@@ -105,7 +113,7 @@ async function main(): Promise<void> {
     ragStore,
     renderer: new SourceRenderer(new ImagePageRenderer(), pdfRenderer),
     ollama,
-    ocr: engines[config.localOcrEngine],
+    ocr: engineFor(config.localOcrEngine),
     mappingVersion: config.archiveMapping.version,
     embeddingDimensions: config.embeddingDimensions,
     chunkMaxCharacters: config.limits.chunkMaxChars,
@@ -177,6 +185,10 @@ async function main(): Promise<void> {
     // to a surrogate rag.claim.id rather than using objectId directly.
     const scopeId = await ragStore.resolveScope(objectType, objectId, label);
 
+    // Held typed rather than reached through engineFor, so the language set it
+    // settles on is readable when the response is built.
+    const tesseract = engine === 'ollama' ? null : createTesseractRecognizer(engine, config.tesseract);
+    const ocr: OcrEngineChoice = { id: engine, recognizer: tesseract ?? ollama };
     const result = await pipeline.ingestSource({
       archiveId,
       sourceClaimId: scopeId,
@@ -187,7 +199,7 @@ async function main(): Promise<void> {
       // Someone re-submitting a document through the UI is asking for a retry;
       // otherwise one terminal failure would lock that archive id out for good.
       retryTerminal: true,
-      ocr: engines[engine],
+      ocr,
     });
 
     if (result.outcome === 'failed' || result.outcome === 'retry_wait') {
@@ -213,7 +225,9 @@ async function main(): Promise<void> {
       scopeId,
       reused: result.outcome === 'skipped',
       engine,
-      modelid: engine === 'ollama' ? config.ollama.ocrModel : `tesseract:${config.tesseract.langs[engine]}`,
+      // The language set that actually ran, which under tesseract-auto is only
+      // known once page 1 has been read — and not at all on a reuse that skipped OCR.
+      modelid: tesseract ? `tesseract:${tesseract.langs ?? 'osd'}` : config.ollama.ocrModel,
       // Page 1 speaks for the document; a mixed-language scan is not worth a per-page field yet.
       // Tesseract reports no language of its own, so its pages are read by script instead.
       language: engine === 'ollama' ? detectLanguage(pages[0]?.text ?? '') : detectScript(pages[0]?.text ?? ''),
@@ -258,9 +272,23 @@ async function main(): Promise<void> {
     const full = body['full'] === true;
     const topK = Number.isSafeInteger(Number(body['topK'])) && Number(body['topK']) > 0 ? Number(body['topK']) : config.ragTopK;
 
-    const { context, citations, empty } = full
-      ? await fullDocumentContext(documentIds)
-      : await retrievedContext(prompt, documentIds, topK);
+    // Full mode falls back to retrieval when the selection cannot fit, rather
+    // than refusing: a 94-page document has no whole-document answer at this
+    // context size, and the nearest chunks beat a dead end. The fallback is
+    // reported to the caller, not hidden  an answer drawn from excerpts must
+    // never be presented as one drawn from every page.
+    let selected = full ? await fullDocumentContext(documentIds) : await retrievedContext(prompt, documentIds, topK);
+    let mode: 'full' | 'retrieval' = full ? 'full' : 'retrieval';
+    let fellBack: { chars: number; budget: number } | null = null;
+    if (selected.overBudget) {
+      fellBack = selected.overBudget;
+      mode = 'retrieval';
+      // Fill the budget rather than using the drawer's topK: the caller asked to
+      // read the whole document, so give the model as much of it as will fit.
+      const fillTopK = Math.max(topK, Math.floor(selected.overBudget.budget / config.limits.chunkMaxChars));
+      selected = await retrievedContext(prompt, documentIds, fillTopK);
+    }
+    const { context, citations, empty } = selected;
 
     if (empty) {
       // Nothing to answer from. Still an SSE response, so the client has one
@@ -276,11 +304,22 @@ async function main(): Promise<void> {
       await ollama.chat(prompt + RETRIEVAL_SYSTEM_SUFFIX, context, (token, thinking) =>
         send(thinking ? { thinking: token } : { token }),
       );
-      send({ done: true, citations, elapsedTimeMs: Date.now() - startedAt });
+      send({
+        done: true,
+        citations,
+        mode,
+        ...(fellBack ? { fellBack } : {}),
+        elapsedTimeMs: Date.now() - startedAt,
+      });
       logger.info('local_chat_completed', {
         documentIds: documentIds.length,
-        mode: full ? 'full' : 'retrieval',
+        mode,
+        requested: full ? 'full' : 'retrieval',
         sources: citations.length,
+        // Paired with chat_prompt_tokens above it: the estimate this budget was
+        // built on, next to what the model actually read.
+        contextChars: context.length,
+        estimatedTokens: Math.ceil(context.length / CHARS_PER_TOKEN),
         elapsedMs: Date.now() - startedAt,
       });
     });
@@ -304,12 +343,10 @@ async function main(): Promise<void> {
     // failure this mode exists to remove.
     const budget = Math.floor(config.ollama.numContext * ANSWER_HEADROOM * CHARS_PER_TOKEN);
     if (context.length > budget) {
-      throw new ServiceError(
-        `Selected ${withPages.length} document(s) totalling ${context.length} characters, over the ${budget}-character budget ` +
-          `for a ${config.ollama.numContext}-token context. Select fewer documents, or raise OLLAMA_NUM_CTX.`,
-        'source_limit',
-        false,
-      );
+      // Reported, not thrown: the caller retries this as a retrieval query. A
+      // document this size has no whole-document answer at this context length,
+      // and raising OLLAMA_NUM_CTX far enough costs VRAM the GPU does not have.
+      return { context: '', citations: [], empty: null, overBudget: { chars: context.length, budget } };
     }
 
     return {

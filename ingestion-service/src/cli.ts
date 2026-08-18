@@ -8,7 +8,7 @@ import { OllamaClient } from './ollama.js';
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
-import { TesseractClient } from './tesseract.js';
+import { createTesseractRecognizer } from './tesseract.js';
 
 interface IngestArguments {
   archiveId?: number;
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
         ? { id: 'ollama', recognizer: ollama }
         : {
             id: config.localOcrEngine,
-            recognizer: new TesseractClient({ container: config.tesseract.container, langs: config.tesseract.langs[config.localOcrEngine] }),
+            recognizer: createTesseractRecognizer(config.localOcrEngine, config.tesseract),
           },
     mappingVersion: config.archiveMapping.version,
     embeddingDimensions: config.embeddingDimensions,

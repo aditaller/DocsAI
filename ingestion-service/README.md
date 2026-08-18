@@ -54,7 +54,7 @@ It runs in two ways over the same pipeline:
    the service reaches it with `docker exec -i`:
 
    ```powershell
-   docker exec tesseract-ocr tesseract --list-langs   # expect at least eng, heb
+   docker exec tesseract-ocr tesseract --list-langs   # expect at least eng, heb, osd
    ```
 
 4. Create a least-privilege SQL Server archive reader and PostgreSQL RAG writer.

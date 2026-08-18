@@ -69,15 +69,17 @@ export const DI_CONFIG = {
     // Which engine reads the pages locally; sent as ?engine= on every ingest.
     // Embedding and chat stay on Ollama either way. Tesseract is the default:
     // it is an order of magnitude faster and the only one of the two that reads
-    // Hebrew reliably. It appears once per language set, because loading the
-    // Hebrew model for an English page makes that page worse, not better.
-    // The ids must match OCR_ENGINE_IDS in the service.
+    // Hebrew reliably. Loading the Hebrew model for an English page makes that
+    // page worse, not better, so the language has to be chosen per document —
+    // auto reads it off the page itself and the two explicit sets stay for the
+    // scans it cannot call. The ids must match OCR_ENGINE_IDS in the service.
     engines: [
+      { id: 'tesseract-auto', label: 'Tesseract · auto-detect', short: 'Tesseract', modelId: 'tesseract-auto' },
       { id: 'tesseract-heb', label: 'Tesseract HEB · heb+eng', short: 'Tesseract HEB', modelId: 'tesseract-heb' },
       { id: 'tesseract-eng', label: 'Tesseract ENG · eng', short: 'Tesseract ENG', modelId: 'tesseract-eng' },
       { id: 'ollama', label: 'Ollama Vision', short: 'Ollama', modelId: 'ollama' },
     ] as OcrEngine[],
-    defaultEngineId: 'tesseract-heb',
+    defaultEngineId: 'tesseract-auto',
   },
   ai: {
     models: [

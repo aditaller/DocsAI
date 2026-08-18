@@ -1,4 +1,4 @@
-import { Component, effect, ElementRef, input, output, signal, viewChild } from '@angular/core';
+import { Component, computed, effect, ElementRef, input, output, signal, viewChild } from '@angular/core';
 import { RAW_OCR } from '../data/data';
 import { Job, RawOcr, THINKING_PREFIX, Toast } from '../models/models';
 import { FileIconComponent, IconComponent } from './shared';
@@ -14,7 +14,7 @@ import { FileIconComponent, IconComponent } from './shared';
           <di-file-icon [type]="j.type" />
           <div class="titles">
             <div class="t">{{ j.name }}</div>
-            <div class="s">Raw OCR · {{ j.confidence }}% avg confidence</div>
+            <div class="s">Raw OCR · {{ j.confidence }}% avg confidence{{ pageLabel() }}</div>
           </div>
           <button class="drawer-close" (click)="close.emit()" aria-label="Close"><di-icon name="close" /></button>
         </div>
@@ -30,7 +30,7 @@ import { FileIconComponent, IconComponent } from './shared';
           </div>
           @if (tab() === 'text') {
             <div class="raw-ocr-text">
-              @for (ln of data()?.lines ?? []; track $index) {
+              @for (ln of lines(); track $index) {
                 <div class="raw-line">
                   <span class="ln">{{ pad($index + 1) }}</span>
                   <span style="flex:1" [innerHTML]="ln || '&nbsp;'"></span>
@@ -57,10 +57,34 @@ import { FileIconComponent, IconComponent } from './shared';
 export class RawOcrDrawerComponent {
   job = input.required<Job | null>();
   ocrModelId = input<string>('prebuilt-document');
+  /** Page range to show alone, from a clicked page reference in an answer. */
+  pages = input<[number, number] | null>(null);
   close = output<void>();
 
   tab = signal<'text' | 'json'>('text');
   data = signal<RawOcr | undefined>(undefined);
+
+  /**
+   * Local ingest writes one line per page, prefixed `[Page N]`; that marker is what
+   * a page range filters on. Cloud OCR has no markers, so nothing matches and the
+   * whole text stays — better than an empty drawer.
+   */
+  private picked = computed(() => {
+    const all = this.data()?.lines ?? [];
+    const range = this.pages();
+    if (!range) return null;
+    const hits = all.filter((l) => {
+      const m = /^\[Page (\d+)\]/.exec(l);
+      return !!m && +m[1] >= range[0] && +m[1] <= range[1];
+    });
+    return hits.length ? hits : null;
+  });
+  lines = computed(() => this.picked() ?? this.data()?.lines ?? []);
+  pageLabel = computed(() => {
+    const range = this.pages();
+    if (!range || !this.picked()) return '';
+    return range[0] === range[1] ? ` · page ${range[0]}` : ` · pages ${range[0]}–${range[1]}`;
+  });
 
   constructor() {
     effect(() => {

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { ServiceError } from '../src/errors.js';
-import { detectScript, parseTesseractTsv, TesseractClient } from '../src/tesseract.js';
+import { AutoTesseractClient, detectScript, parseTesseractTsv, TesseractClient } from '../src/tesseract.js';
 
 const HEADER = 'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext';
 
@@ -60,24 +60,39 @@ interface SpawnRecord {
   stdin: Buffer[];
 }
 
-/** Stands in for `docker`: records the argv and stdin, then replays a canned run. */
-function fakeSpawn(stdout: string, exitCode = 0, stderr = ''): { implementation: typeof spawn; calls: SpawnRecord[] } {
+interface Run {
+  stdout?: string;
+  exitCode?: number;
+  stderr?: string;
+}
+
+/**
+ * Stands in for `docker`: records the argv and stdin, then replays the canned
+ * runs in order. The last one repeats, so a single-run list behaves like a fixed
+ * response for the tests that only ever exec once.
+ */
+function fakeSpawnRuns(runs: Run[]): { implementation: typeof spawn; calls: SpawnRecord[] } {
   const calls: SpawnRecord[] = [];
   const implementation = ((command: string, args: string[]) => {
     const call: SpawnRecord = { command, args, stdin: [] };
+    const run = runs[Math.min(calls.length, runs.length - 1)] ?? {};
     calls.push(call);
     const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
     child['stdout'] = new EventEmitter();
     child['stderr'] = new EventEmitter();
     child['stdin'] = Object.assign(new EventEmitter(), { end: (bytes: Buffer) => call.stdin.push(bytes) });
     setImmediate(() => {
-      if (stdout) (child['stdout'] as EventEmitter).emit('data', Buffer.from(stdout, 'utf8'));
-      if (stderr) (child['stderr'] as EventEmitter).emit('data', Buffer.from(stderr, 'utf8'));
-      child.emit('close', exitCode);
+      if (run.stdout) (child['stdout'] as EventEmitter).emit('data', Buffer.from(run.stdout, 'utf8'));
+      if (run.stderr) (child['stderr'] as EventEmitter).emit('data', Buffer.from(run.stderr, 'utf8'));
+      child.emit('close', run.exitCode ?? 0);
     });
     return child;
   }) as unknown as typeof spawn;
   return { implementation, calls };
+}
+
+function fakeSpawn(stdout: string, exitCode = 0, stderr = ''): { implementation: typeof spawn; calls: SpawnRecord[] } {
+  return fakeSpawnRuns([{ stdout, exitCode, stderr }]);
 }
 
 test('TesseractClient execs the container with the page on stdin', async () => {
@@ -118,4 +133,107 @@ test('TesseractClient reports an empty transcription instead of storing a blank 
     client.recognizePage({ pageIndex: 2, mimeType: 'image/png', bytes: Buffer.from([1]) }),
     /no text for page 2/,
   );
+});
+
+/** What `tesseract stdin stdout --psm 0 -l osd` writes for a page it could call. */
+function osd(script: string, confidence = 12.5): string {
+  return ['Page number: 0', 'Orientation in degrees: 0', 'Rotate: 0', 'Orientation confidence: 7.5', `Script: ${script}`, `Script confidence: ${confidence}`].join('\n');
+}
+
+const OSD_ARGS = ['exec', '-i', 'tesseract-ocr', 'tesseract', 'stdin', 'stdout', '--psm', '0', '-l', 'osd'];
+
+/** The pair AutoTesseractClient chooses between, sharing one fake docker. */
+function autoClient(implementation: typeof spawn): AutoTesseractClient {
+  return new AutoTesseractClient({
+    hebrew: new TesseractClient({ container: 'tesseract-ocr', langs: 'heb+eng', spawnImplementation: implementation }),
+    latin: new TesseractClient({ container: 'tesseract-ocr', langs: 'eng', spawnImplementation: implementation }),
+  });
+}
+
+function page(pageIndex: number): { pageIndex: number; mimeType: 'image/png'; bytes: Buffer } {
+  return { pageIndex, mimeType: 'image/png', bytes: Buffer.from([137, 80, 78, 71]) };
+}
+
+test('detectPageScript asks for OSD only, and reads the script back', async () => {
+  const { implementation, calls } = fakeSpawn(osd('Hebrew'));
+  const client = new TesseractClient({ container: 'tesseract-ocr', langs: 'heb+eng', spawnImplementation: implementation });
+
+  assert.equal(await client.detectPageScript(page(1)), 'Hebrew');
+  assert.deepEqual(calls[0]?.args, OSD_ARGS);
+});
+
+test('detectPageScript declines rather than throwing when OSD gives up on the page', async () => {
+  // The real failure on a page with too little text: non-zero exit, no Script line.
+  const { implementation } = fakeSpawn('', 1, 'Too few characters. Skipping this page');
+  const client = new TesseractClient({ container: 'tesseract-ocr', langs: 'heb+eng', spawnImplementation: implementation });
+
+  assert.equal(await client.detectPageScript(page(1)), null);
+});
+
+test('detectPageScript declines a call it is not confident in', async () => {
+  const { implementation } = fakeSpawn(osd('Latin', 0.4));
+  const client = new TesseractClient({ container: 'tesseract-ocr', langs: 'heb+eng', spawnImplementation: implementation });
+
+  assert.equal(await client.detectPageScript(page(1)), null);
+});
+
+test('AutoTesseractClient loads heb+eng for a page OSD calls Hebrew', async () => {
+  const { implementation, calls } = fakeSpawnRuns([{ stdout: osd('Hebrew') }, { stdout: PAGE }]);
+  const client = autoClient(implementation);
+
+  const result = await client.recognizePage(page(1));
+
+  assert.deepEqual(calls[0]?.args, OSD_ARGS);
+  assert.deepEqual(calls[1]?.args, ['exec', '-i', 'tesseract-ocr', 'tesseract', 'stdin', 'stdout', '-l', 'heb+eng', 'tsv']);
+  assert.equal(client.langs, 'heb+eng');
+  assert.equal(result.text, 'שלום עולם\n~~ Ltd.\n\nTotal');
+});
+
+test('AutoTesseractClient drops heb for a page OSD calls Latin', async () => {
+  const { implementation, calls } = fakeSpawnRuns([{ stdout: osd('Latin') }, { stdout: PAGE }]);
+  const client = autoClient(implementation);
+
+  await client.recognizePage(page(1));
+
+  assert.deepEqual(calls[1]?.args, ['exec', '-i', 'tesseract-ocr', 'tesseract', 'stdin', 'stdout', '-l', 'eng', 'tsv']);
+  assert.equal(client.langs, 'eng');
+});
+
+test('AutoTesseractClient falls back to heb+eng when OSD will not call the page', async () => {
+  // heb+eng still reads a Latin page; eng on a Hebrew page returns nothing usable.
+  const { implementation, calls } = fakeSpawnRuns([{ exitCode: 1, stderr: 'Too few characters. Skipping this page' }, { stdout: PAGE }]);
+  const client = autoClient(implementation);
+
+  await client.recognizePage(page(1));
+
+  assert.equal(client.langs, 'heb+eng');
+  assert.deepEqual(calls[1]?.args?.slice(-3), ['-l', 'heb+eng', 'tsv']);
+});
+
+test('AutoTesseractClient detects once per document, not once per page', async () => {
+  const { implementation, calls } = fakeSpawnRuns([{ stdout: osd('Hebrew') }, { stdout: PAGE }]);
+  const client = autoClient(implementation);
+
+  await client.recognizePage(page(1));
+  await client.recognizePage(page(2));
+  await client.recognizePage(page(3));
+
+  assert.equal(calls.filter((call) => call.args.includes('osd')).length, 1);
+  assert.equal(calls.length, 4);
+});
+
+test('AutoTesseractClient re-detects on page 1, so a shared instance does not carry a language over', async () => {
+  const { implementation, calls } = fakeSpawnRuns([
+    { stdout: osd('Hebrew') },
+    { stdout: PAGE },
+    { stdout: osd('Latin') },
+    { stdout: PAGE },
+  ]);
+  const client = autoClient(implementation);
+
+  await client.recognizePage(page(1));
+  assert.equal(client.langs, 'heb+eng');
+  // The batch CLI reuses one instance across documents; page 1 is where the next begins.
+  await client.recognizePage(page(1));
+  assert.equal(client.langs, 'eng');
 });

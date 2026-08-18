@@ -64,9 +64,11 @@ export interface PageRecognizer {
  * Tesseract is listed once per language set rather than taking the languages as
  * a parameter: loading `heb` for an English document actively hurts it, because
  * the Hebrew model competes for every Latin glyph. The choice belongs to the
- * document, so it belongs in the engine list the operator picks from.
+ * document, which is what `tesseract-auto` reads off it — the two explicit sets
+ * stay for the scans OSD cannot call, where the operator knows the corpus and
+ * the page does not say.
  */
-export const OCR_ENGINE_IDS = ['ollama', 'tesseract-heb', 'tesseract-eng'] as const;
+export const OCR_ENGINE_IDS = ['ollama', 'tesseract-auto', 'tesseract-heb', 'tesseract-eng'] as const;
 export type OcrEngineId = (typeof OCR_ENGINE_IDS)[number];
 
 /** The engine handling one ingest, and the id that names it in logs and fingerprints. */

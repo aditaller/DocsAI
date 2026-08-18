@@ -4,6 +4,9 @@ import { DI_CONFIG } from '../config/di.config';
 import { AnalysisResponse, Job } from '../models/models';
 import { IconComponent } from './shared';
 
+/** `p.3`, `pp. 3-5`, `page 3`, `pages 3–5`, `עמוד 3`, `עמ' 3` — as the answer or the Sources line writes them. */
+const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\s*[-–]\s*(\d+))?/gi;
+
 @Component({
   selector: 'di-llm-panel',
   imports: [IconComponent],
@@ -171,7 +174,7 @@ export class LlmPanelComponent {
           </div>
 
           <div class="resp-body">
-            <p class="summary" dir="auto" [innerHTML]="r.summary"></p>
+            <p class="summary" dir="auto" [innerHTML]="summaryHtml()" (click)="onSummaryClick($event)"></p>
 
             <div class="resp-section-title">Extracted Fields</div>
             <div class="kv-grid">
@@ -214,6 +217,62 @@ export class ResponseCardComponent {
   response = input.required<AnalysisResponse | null>();
   analyzing = input.required<boolean>();
   canChat = input(false);
+  /** Names of docs whose original can be opened at a page; the extra link shows only for those. */
+  pdfDocNames = input<string[]>([]);
+
+  /** A clicked page reference, resolved to the document it was written next to. */
+  openPages = output<{ docName: string; from: number; to: number }>();
+  /** The companion link: open the original PDF at that page. */
+  openOriginal = output<{ docName: string; page: number }>();
+
+  /**
+   * Every page reference becomes an anchor. The href carries the range because
+   * Angular's sanitizer drops data- attributes and inline handlers from
+   * [innerHTML]; a delegated click on the paragraph reads it back.
+   */
+  summaryHtml = computed(() => {
+    const r = this.response();
+    if (!r) return '';
+    return r.summary.replace(PAGE_REF, (match, from: string, to: string | undefined, offset: number, whole: string) => {
+      // The nearest document name written before the reference owns it — that is
+      // how both the Sources line and a model naming a file read.
+      const before = whole.slice(0, offset);
+      let doc = 0;
+      let at = -1;
+      r.docNames.forEach((n, i) => {
+        const found = before.lastIndexOf(n);
+        if (found > at) {
+          at = found;
+          doc = i;
+        }
+      });
+      const ref = `<a class="page-ref" href="#pg=${doc}.${from}-${to || from}">${match}</a>`;
+      // Only a PDF has a page fragment to open at, so the second link is omitted
+      // for anything else rather than opening the original on page 1.
+      if (!this.pdfDocNames().includes(r.docNames[doc])) return ref;
+      return `${ref}<a class="page-open" href="#pgopen=${doc}.${from}" title="Open the original PDF at page ${from}">↗</a>`;
+    });
+  });
+
+  onSummaryClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement).closest('a.page-ref, a.page-open');
+    const href = a?.getAttribute('href') ?? '';
+    const docNames = this.response()?.docNames ?? [];
+
+    const open = /#pgopen=(\d+)\.(\d+)/.exec(href);
+    if (open) {
+      e.preventDefault();
+      const docName = docNames[+open[1]];
+      if (docName) this.openOriginal.emit({ docName, page: +open[2] });
+      return;
+    }
+
+    const m = /#pg=(\d+)\.(\d+)-(\d+)/.exec(href);
+    if (!m) return;
+    e.preventDefault();
+    const docName = docNames[+m[1]];
+    if (docName) this.openPages.emit({ docName, from: +m[2], to: +m[3] });
+  }
 
   /**
    * Flips the whole result section when the model answered in Hebrew. Reading the
