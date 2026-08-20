@@ -7,7 +7,7 @@ import { FileIconComponent, IconComponent } from './shared';
   selector: 'di-raw-ocr-drawer',
   imports: [IconComponent, FileIconComponent],
   template: `
-    <div class="drawer-scrim" [class.open]="!!job()" (click)="close.emit()"></div>
+    <div class="drawer-scrim" data-testid="raw-drawer-scrim" [class.open]="!!job()" (click)="close.emit()"></div>
     <div class="drawer" [class.open]="!!job()" role="dialog" aria-label="Raw OCR output">
       @if (job(); as j) {
         <div class="drawer-head">
@@ -16,7 +16,7 @@ import { FileIconComponent, IconComponent } from './shared';
             <div class="t">{{ j.name }}</div>
             <div class="s">Raw OCR · {{ j.confidence }}% avg confidence{{ pageLabel() }}</div>
           </div>
-          <button class="drawer-close" (click)="close.emit()" aria-label="Close"><di-icon name="close" /></button>
+          <button class="drawer-close" data-testid="raw-drawer-close" (click)="close.emit()" aria-label="Close"><di-icon name="close" /></button>
         </div>
         <div class="drawer-body">
           <div class="raw-stats">
@@ -25,8 +25,8 @@ import { FileIconComponent, IconComponent } from './shared';
             <div class="raw-stat"><div class="k">Low-conf Tokens</div><div class="v">{{ data()?.lowConf ?? 0 }}</div></div>
           </div>
           <div class="raw-tabs">
-            <button class="raw-tab" [class.active]="tab() === 'text'" (click)="tab.set('text')">Extracted Text</button>
-            <button class="raw-tab" [class.active]="tab() === 'json'" (click)="tab.set('json')">Layout JSON</button>
+            <button class="raw-tab" data-testid="raw-tab-text" [class.active]="tab() === 'text'" (click)="tab.set('text')">Extracted Text</button>
+            <button class="raw-tab" data-testid="raw-tab-json" [class.active]="tab() === 'json'" (click)="tab.set('json')">Layout JSON</button>
           </div>
           @if (tab() === 'text') {
             <div class="raw-ocr-text">
@@ -108,7 +108,7 @@ interface ChatMsg {
   selector: 'di-chat-drawer',
   imports: [IconComponent],
   template: `
-    <div class="drawer-scrim" [class.open]="open()" (click)="close.emit()"></div>
+    <div class="drawer-scrim" data-testid="chat-drawer-scrim" [class.open]="open()" (click)="close.emit()"></div>
     <div class="drawer" [class.open]="open()" role="dialog" aria-label="Document chat">
       <div class="drawer-head">
         <div class="z-icon" style="width:34px;height:34px"><di-icon name="chat" [size]="17" /></div>
@@ -116,7 +116,7 @@ interface ChatMsg {
           <div class="t">Chat on Documents</div>
           <div class="s">RAG · {{ docNames().length }} doc{{ docNames().length !== 1 ? 's' : '' }} in context</div>
         </div>
-        <button class="drawer-close" (click)="close.emit()" aria-label="Close"><di-icon name="close" /></button>
+        <button class="drawer-close" data-testid="chat-drawer-close" (click)="close.emit()" aria-label="Close"><di-icon name="close" /></button>
       </div>
       <div class="drawer-body" #body>
         <div class="chat-ctx">
@@ -142,13 +142,14 @@ interface ChatMsg {
       </div>
       <div class="chat-input-bar">
         <input
+          data-testid="chat-input"
           [value]="input()"
           [disabled]="pending()"
           (input)="input.set($any($event.target).value)"
           (keydown.enter)="send()"
           placeholder="Ask about these documents…"
         />
-        <button class="chat-send" [disabled]="pending()" (click)="send()" aria-label="Send"><di-icon name="send" [size]="17" /></button>
+        <button class="chat-send" data-testid="chat-send" [disabled]="pending()" (click)="send()" aria-label="Send"><di-icon name="send" [size]="17" /></button>
       </div>
     </div>
   `,

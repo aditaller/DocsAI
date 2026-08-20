@@ -1,0 +1,42 @@
+{
+  "_comment": "Hand-transcribed ground truth for שאלון יב - מחלות מטבוליות (DU1133178599), Clal form code 2783, edition February 2023. Two pages. Transcribed from the 150dpi render by eye; this is the only trustworthy accuracy measure for the azure-layout engine. 19 marks total in the כן/לא columns: 3 כן, 16 לא.",
+  "source": "C:/temp/OCR/files/שאלון יב - מחלות מטבוליות__DU1133178599.pdf",
+  "formCode": "2783",
+  "candidate": {
+    "familyName": "מאיר",
+    "firstName": "שירלי",
+    "birthDate": "22/03/1972",
+    "sex": "נקבה",
+    "heightCm": "164",
+    "weightKg": "70",
+    "signedDate": "24/10/2023",
+    "agentNumber": "70824",
+    "role": "מועמד שני"
+  },
+  "answers": [
+    { "page": 1, "label": "1",     "text": "סוכרת",                                                  "kind": "boolean", "value": "כן" },
+    { "page": 1, "label": "1.א",   "text": "סוכרת נעורים - סוג 1",                                   "kind": "boolean", "value": "כן" },
+    { "page": 1, "label": "1.1",   "text": "לפני כמה שנים אובחנה",                                   "kind": "value",   "value": "38" },
+    { "page": 1, "label": "1.2",   "text": "מטופל ב: תרופות",                                        "kind": "boolean", "value": "כן" },
+    { "page": 1, "label": "1.3",   "text": "רמת ההמוגלובין מסוכר HBA1C בבדיקה שנערכה ב-6 חודשים האחרונים", "kind": "value", "value": "7.8" },
+    { "page": 1, "label": "1.4",   "text": "קיימת פגיעה בעיניים או בראייה (רטינופתיה)",              "kind": "boolean", "value": "לא" },
+    { "page": 1, "label": "1.5",   "text": "לגבי נשים - סוכרת הריונית במהלך שלוש שנים האחרונות",     "kind": "boolean", "value": "לא" },
+    { "page": 1, "label": "1.5.1", "text": "האם ערכי הסוכר לאחר הלידה חזרו לנורמה",                  "kind": "boolean", "value": "לא" },
+    { "page": 1, "label": "1.6",   "text": "סוכרת תפלה",                                             "kind": "boolean", "value": "לא" },
+    { "page": 1, "label": "2",     "text": "מחלות ו/או הפרעות בשומנים בדם",                          "kind": "boolean", "value": "לא" },
+    { "page": 1, "label": "3",     "text": "גושה / נשאות למחלת גושה",                                "kind": "boolean", "value": "לא" },
+    { "page": 1, "label": "4",     "text": "מחלות או הפרעות בתפקוד בלוטת התריס (בלוטת המגן/תירואיד)", "kind": "boolean", "value": "לא" },
+    { "page": 1, "label": "5",     "text": "קדחת ים תיכונית (FMF)",                                  "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "6",     "text": "גאוט (שיגדון) / היפראוריצמיה (עלייה ברמת חומצה אורית בדם)", "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "7",     "text": "הפרעה בבלוטת ההיפופיזה (יותרת המוח)",                    "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "8",     "text": "הזעת יתר",                                               "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "9",     "text": "הפרעת גדילה",                                            "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "10",    "text": "הפרעות בלוטת יותרת התריס",                               "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "11",    "text": "בלוטות הרוק",                                            "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "12",    "text": "בלוטות יותרת הכליה (אדרנל)",                             "kind": "boolean", "value": "לא" },
+    { "page": 2, "label": "13",    "text": "מחלה ו/או הפרעה מטבולית ו/או הורמונלית אחרת",            "kind": "boolean", "value": "לא" }
+  ],
+  "_positiveExpectation": "Exactly three questions are answered כן: 1, 1.א, 1.2. A correct analysis reports type-1 diabetes diagnosed 38 years ago, treated with medication, HbA1c 7.8, no complications, everything else negative.",
+  "_blackedOutRows": "Rows 1.1, 1.3, 2.1, 2.2, 5.3 (page 1) and 8.1.1 (page 2) have solid-black answer cells: the form blanks the כן/לא pair where the answer is a written value. An ink-density check must exclude these, since a solid cell reads ~90% ink in BOTH columns.",
+  "_unmarkedRows": "1.ב, 2.1, 2.2, 2.3, 4.1, 4.1.1, 4.2, 4.2.1, 4.2.2, 4.3, 5.1, 5.2, 5.3 (page 1) and 6.1, 6.1.1, 6.2, 8.1, 8.1.1, 8.1.2, 11.1, 11.1.1-11.1.4, 11.2, 11.2.1-11.2.3 (page 2) carry no mark in either column. False positives here are the main risk."
+}

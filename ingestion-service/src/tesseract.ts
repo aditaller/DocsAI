@@ -280,7 +280,7 @@ export class AutoTesseractClient implements TesseractRecognizer {
  * shared. Callers get a new one every time and need not know which is which.
  */
 export function createTesseractRecognizer(
-  id: Exclude<OcrEngineId, 'ollama'>,
+  id: Exclude<OcrEngineId, 'ollama' | 'azure-layout'>,
   options: { container: string; langs: Record<'tesseract-heb' | 'tesseract-eng', string> },
 ): TesseractRecognizer {
   const client = (langs: string): TesseractClient => new TesseractClient({ container: options.container, langs });

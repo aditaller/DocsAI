@@ -61,20 +61,71 @@ export interface PageRecognizer {
 }
 
 /**
+ * One answer read off a form: a question and what the candidate put against it.
+ *
+ * `label` is the printed question number (`1.5.1`), `text` the question itself,
+ * and `value` either the marked option (`כן`/`לא`) or the written-in figure. A
+ * checkbox grid is the whole reason this exists: the OCR text of a scanned
+ * questionnaire contains the questions but not the answers, because the answers
+ * are ticks in table cells rather than words.
+ */
+export interface FormAnswer {
+  page: number;
+  label: string;
+  text: string;
+  kind: 'boolean' | 'value';
+  value: string;
+  confidence?: number | null;
+}
+
+/**
+ * A whole document in, text and structure out.
+ *
+ * Deliberately not `PageRecognizer`. A layout engine reads tables that span
+ * pages and is priced per page whether it is handed a PDF or a stack of PNGs,
+ * so rasterising first would cost the same and throw the structure away. The
+ * pipeline branches on which of the two contracts an engine implements.
+ */
+export interface DocumentAnalyzer {
+  analyzeDocument(bytes: Buffer, mimeType: string): Promise<AnalyzedDocument>;
+}
+
+export interface AnalyzedDocument {
+  pages: TextPage[];
+  answers: FormAnswer[];
+}
+
+export function isDocumentAnalyzer(
+  engine: PageRecognizer | DocumentAnalyzer,
+): engine is DocumentAnalyzer {
+  return typeof (engine as DocumentAnalyzer).analyzeDocument === 'function';
+}
+
+/**
  * Tesseract is listed once per language set rather than taking the languages as
  * a parameter: loading `heb` for an English document actively hurts it, because
  * the Hebrew model competes for every Latin glyph. The choice belongs to the
  * document, which is what `tesseract-auto` reads off it — the two explicit sets
  * stay for the scans OSD cannot call, where the operator knows the corpus and
  * the page does not say.
+ *
+ * `azure-layout` is the odd one out: it is the only engine that reports which
+ * checkbox was ticked, which is the only way a questionnaire's answers can be
+ * read at all. It runs in a local container and is billed per page.
  */
-export const OCR_ENGINE_IDS = ['ollama', 'tesseract-auto', 'tesseract-heb', 'tesseract-eng'] as const;
+export const OCR_ENGINE_IDS = [
+  'ollama',
+  'tesseract-auto',
+  'tesseract-heb',
+  'tesseract-eng',
+  'azure-layout',
+] as const;
 export type OcrEngineId = (typeof OCR_ENGINE_IDS)[number];
 
 /** The engine handling one ingest, and the id that names it in logs and fingerprints. */
 export interface OcrEngineChoice {
   id: OcrEngineId;
-  recognizer: PageRecognizer;
+  recognizer: PageRecognizer | DocumentAnalyzer;
 }
 
 export interface TextChunk {

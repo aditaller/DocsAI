@@ -14,7 +14,11 @@ import { FileIconComponent, IconComponent } from './shared';
         <div class="ctx-bar">
           <div class="segmented" role="tablist">
             @for (t of types; track t) {
-              <button [class.active]="objectType() === t" (click)="objectTypeChange.emit(t)">{{ t }}</button>
+              <button
+                [attr.data-testid]="'object-type-' + t.toLowerCase().replace(' ', '-')"
+                [class.active]="objectType() === t"
+                (click)="objectTypeChange.emit(t)"
+              >{{ t }}</button>
             }
           </div>
           <div class="id-row">
@@ -22,6 +26,7 @@ import { FileIconComponent, IconComponent } from './shared';
               <span class="lead">{{ prefix() }}-</span>
               <input
                 class="id-input"
+                data-testid="object-id"
                 [value]="display() ?? objectId()"
                 (input)="onId($any($event.target).value)"
                 list="process-hits"
@@ -34,7 +39,7 @@ import { FileIconComponent, IconComponent } from './shared';
                 }
               </datalist>
             </div>
-            <button class="icon-btn" title="Look up process" aria-label="Look up process">
+            <button class="icon-btn" data-testid="object-id-lookup" title="Look up process" aria-label="Look up process">
               <di-icon name="search" />
             </button>
           </div>
@@ -47,11 +52,12 @@ import { FileIconComponent, IconComponent } from './shared';
 
       <div class="list-toolbar">
         <span class="count"><b>{{ docs().length }}</b> documents · <b>{{ selectedCount() }}</b> selected</span>
-        <label class="ghost-btn" style="cursor:pointer">
+        <label class="ghost-btn" data-testid="load-from-server" style="cursor:pointer">
           <di-icon name="refresh" [size]="14" />
           Load from Server
           <input
             type="file"
+            data-testid="file-input"
             (change)="onFiles($any($event.target).files); $any($event.target).value = ''"
             style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0)"
           />
@@ -60,9 +66,12 @@ import { FileIconComponent, IconComponent } from './shared';
 
       <div class="doc-list">
         @for (d of docs(); track d.id) {
-          <div class="doc-card" [class.selected]="d.selected" (click)="preview.emit(d)" title="Click to preview">
+          <!-- testids are positional: the recorder/replay needs a handle that means the
+               same thing on both runs, and d.id is regenerated per session. -->
+          <div class="doc-card" [attr.data-testid]="'doc-card-' + $index" [class.selected]="d.selected" (click)="preview.emit(d)" title="Click to preview">
             <div
               class="checkbox"
+              [attr.data-testid]="'doc-checkbox-' + $index"
               role="checkbox"
               [attr.aria-checked]="d.selected"
               (click)="$event.stopPropagation(); toggle.emit(d.id)"
@@ -85,6 +94,7 @@ import { FileIconComponent, IconComponent } from './shared';
             @if (d.file && !d.isFromArchive) {
               <button
                 class="arch-btn"
+                [attr.data-testid]="'doc-archive-' + $index"
                 [disabled]="archiving().includes(d.id)"
                 title="Save this file to the record archive"
                 (click)="$event.stopPropagation(); archive.emit(d.id)"
@@ -95,6 +105,7 @@ import { FileIconComponent, IconComponent } from './shared';
             }
             <span
               class="doc-open"
+              [attr.data-testid]="'doc-open-' + $index"
               role="button"
               tabindex="0"
               [title]="d.file ? 'Open file' : 'Preview'"
@@ -103,6 +114,7 @@ import { FileIconComponent, IconComponent } from './shared';
             @if (d.file) {
               <span
                 class="doc-open"
+                [attr.data-testid]="'doc-remove-' + $index"
                 role="button"
                 tabindex="0"
                 title="Remove file"
@@ -114,7 +126,7 @@ import { FileIconComponent, IconComponent } from './shared';
       </div>
 
       <div class="left-footer">
-        <button class="btn-primary" (click)="attach.emit()" [disabled]="selectedCount() === 0">
+        <button class="btn-primary" data-testid="attach-send-ocr" (click)="attach.emit()" [disabled]="selectedCount() === 0">
           <di-icon name="bolt" [size]="17" />
           Attach &amp; Send to OCR
           @if (selectedCount() > 0) {

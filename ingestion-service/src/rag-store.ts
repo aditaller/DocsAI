@@ -3,7 +3,7 @@ import { Pool, type PoolClient } from 'pg';
 import { contentHash } from './chunker.js';
 import { quotePostgresRelation } from './config.js';
 import { ServiceError } from './errors.js';
-import type { IngestionJobState, TextChunk, TextPage } from './types.js';
+import type { FormAnswer, IngestionJobState, TextChunk, TextPage } from './types.js';
 
 const SOURCE_LOCK = 271828182;
 const SCOPE_LOCK = 141421356;
@@ -90,6 +90,8 @@ export interface RagStore {
     sourceStoragePath: string;
     sourceSizeBytes: number;
     pages: TextPage[];
+    /** Structured answers, when the engine reads any. Only azure-layout does. */
+    answers?: FormAnswer[];
     chunks: TextChunk[];
     embeddings: number[][];
     embeddingDimensions: number;
@@ -131,6 +133,7 @@ export class PostgresRagStore implements RagStore {
       this.assertColumns('ingestionrun', [...BASE_COLUMNS.ingestionrun, ...RUN_COLUMNS]),
       this.assertColumns('documentpage', ['id', 'documentid', 'pagenumber', 'ocrtext', 'contenthash']),
       this.assertColumns('documentchunkpage', ['documentchunkid', 'documentpageid']),
+      this.assertColumns('documentfield', ['id', 'documentid', 'pagenumber', 'label', 'questiontext', 'kind', 'value', 'confidence']),
       this.assertColumns('ingestion_preflight_run', ['id', 'mappingversion', 'succeeded', 'detail']),
     ]);
 
@@ -286,6 +289,7 @@ export class PostgresRagStore implements RagStore {
         );
         await client.query(`DELETE FROM ${this.table('documentchunk')} WHERE documentid = $1`, [documentId]);
         await client.query(`DELETE FROM ${this.table('documentpage')} WHERE documentid = $1`, [documentId]);
+        await client.query(`DELETE FROM ${this.table('documentfield')} WHERE documentid = $1`, [documentId]);
         await client.query(
           `UPDATE ${this.table('document')} SET mappingversion = $2, sourcefingerprint = $3 WHERE id = $1`,
           [documentId, input.mappingVersion, input.sourceFingerprint],
@@ -309,6 +313,19 @@ export class PostgresRagStore implements RagStore {
           [documentId, page.pageIndex, page.text, contentHash(page.text)],
         );
         pageIds.set(page.pageIndex, Number(pageRow.rows[0]!.id));
+      }
+
+      // Structured answers live beside the pages rather than inside them: the
+      // page text is what retrieval reads, this is what an underwriting rule
+      // reads. Same transaction, so a document is never half-answered.
+      for (const answer of input.answers ?? []) {
+        await client.query(
+          `INSERT INTO ${this.table('documentfield')} (documentid, pagenumber, label, questiontext, kind, value, confidence)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (documentid, pagenumber, label, questiontext) DO UPDATE
+             SET kind = EXCLUDED.kind, value = EXCLUDED.value, confidence = EXCLUDED.confidence`,
+          [documentId, answer.page, answer.label, answer.text, answer.kind, answer.value, answer.confidence ?? null],
+        );
       }
 
       for (let position = 0; position < input.chunks.length; position += 1) {

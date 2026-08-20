@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { Logger } from '../src/logger.js';
 import { IngestionPipeline } from '../src/pipeline.js';
-import { FakeArchiveReader, FakeOllama, FakePageRenderer, FakeRagStore, FakeRecognizer } from './fakes.js';
+import { FakeArchiveReader, FakeDocumentAnalyzer, FakeOllama, FakePageRenderer, FakeRagStore, FakeRecognizer } from './fakes.js';
 
 test('pipeline records an atomic RAG document from a fake rendered page', async () => {
   const source = {
@@ -188,4 +188,93 @@ test('pipeline writes a successful preflight record before ingestion', async () 
   });
   await pipeline.preflight();
   assert.deepEqual(store.preflights, [true]);
+});
+
+test('pipeline routes a document analyzer past the page recognizer and stores its answers', async () => {
+  const source = {
+    archiveId: 77,
+    sourceClaimId: 314,
+    fileName: 'questionnaire.pdf',
+    mimeType: 'application/pdf',
+    bytes: Buffer.from('%PDF-1.4 scanned questionnaire'),
+  };
+  const analyzer = new FakeDocumentAnalyzer({
+    pages: [{ pageIndex: 1, text: 'שאלון יב', confidence: 0.94 }],
+    answers: [
+      { page: 1, label: '1', text: 'סוכרת', kind: 'boolean', value: 'כן' },
+      { page: 1, label: '1.4', text: 'קיימת פגיעה בעיניים', kind: 'boolean', value: 'לא' },
+    ],
+  });
+  const store = new FakeRagStore();
+  const pipeline = new IngestionPipeline({
+    archiveReader: new FakeArchiveReader(source),
+    ragStore: store,
+    // A scan: no text layer, so the renderer hands back page images that the
+    // analyzer must ignore in favour of the original bytes.
+    renderer: new FakePageRenderer({
+      sourceMimeType: 'application/pdf',
+      pages: [{ pageIndex: 1, mimeType: 'image/png', bytes: Buffer.from([137, 80, 78, 71]) }],
+    }),
+    ollama: new FakeOllama(),
+    ocr: { id: 'azure-layout', recognizer: analyzer },
+    mappingVersion: 'test-v1',
+    embeddingDimensions: 3,
+    chunkMaxCharacters: 200,
+    chunkOverlapCharacters: 20,
+    maxAttempts: 3,
+    retryBaseMs: 1,
+    retryMaxMs: 2,
+    logger: new Logger('error'),
+  });
+
+  const result = await pipeline.ingest(source);
+  assert.equal(result.outcome, 'completed');
+  // The PDF itself reached the engine, not the rasterised page.
+  assert.deepEqual(analyzer.receivedBytes, source.bytes);
+  assert.equal(analyzer.receivedMimeType, 'application/pdf');
+  // The answers were persisted as structured rows...
+  assert.deepEqual(
+    store.persisted?.answers.map((answer) => [answer.label, answer.value]),
+    [['1', 'כן'], ['1.4', 'לא']],
+  );
+  // ...and also folded into the page text, which is the only thing retrieval
+  // ever reads. Without this the chat drawer could not answer "which questions
+  // were positive?" however well the grid was parsed.
+  const page = store.persisted?.pages[0]?.text ?? '';
+  assert.match(page, /שאלות שנענו בחיוב: 1$/mu);
+  assert.match(page, /1\.4 קיימת פגיעה בעיניים — לא/u);
+  assert.equal(store.persisted?.chunks[0]?.content.includes('שאלות שנענו בחיוב'), true);
+});
+
+test('pipeline leaves a page recognizer engine untouched by the answer path', async () => {
+  const source = {
+    archiveId: 78,
+    sourceClaimId: 314,
+    fileName: 'claim.png',
+    mimeType: 'image/png',
+    bytes: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+  };
+  const store = new FakeRagStore();
+  const pipeline = new IngestionPipeline({
+    archiveReader: new FakeArchiveReader(source),
+    ragStore: store,
+    renderer: new FakePageRenderer({
+      sourceMimeType: 'image/png',
+      pages: [{ pageIndex: 1, mimeType: 'image/png', bytes: source.bytes }],
+    }),
+    ollama: new FakeOllama(),
+    mappingVersion: 'test-v1',
+    embeddingDimensions: 3,
+    chunkMaxCharacters: 200,
+    chunkOverlapCharacters: 20,
+    maxAttempts: 3,
+    retryBaseMs: 1,
+    retryMaxMs: 2,
+    logger: new Logger('error'),
+  });
+
+  await pipeline.ingest(source);
+  assert.deepEqual(store.persisted?.answers, []);
+  // No synthesized block on an engine that reports no answers.
+  assert.equal(store.persisted?.pages[0]?.text.includes('שאלות שנענו'), false);
 });

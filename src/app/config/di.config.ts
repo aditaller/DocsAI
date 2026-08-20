@@ -78,6 +78,10 @@ export const DI_CONFIG = {
       { id: 'tesseract-heb', label: 'Tesseract HEB · heb+eng', short: 'Tesseract HEB', modelId: 'tesseract-heb' },
       { id: 'tesseract-eng', label: 'Tesseract ENG · eng', short: 'Tesseract ENG', modelId: 'tesseract-eng' },
       { id: 'ollama', label: 'Ollama Vision', short: 'Ollama', modelId: 'ollama' },
+      // The only engine that reads checkbox answers off a questionnaire. Runs in
+      // a local container and is billed per page, so it is offered but never the
+      // default; health reports `azureLayout` for whether it is up at all.
+      { id: 'azure-layout', label: 'Azure Layout · forms', short: 'Azure Layout', modelId: 'azure-layout' },
     ] as OcrEngine[],
     defaultEngineId: 'tesseract-auto',
   },

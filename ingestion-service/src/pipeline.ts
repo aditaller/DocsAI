@@ -6,7 +6,15 @@ import type { RagStore } from './rag-store.js';
 import { retryDelayMs } from './retry.js';
 import type { ArchiveReader } from './archive-reader.js';
 import type { PageRenderer } from './renderer.js';
-import type { ArchiveRecord, OcrEngineChoice, SourceFile, TextPage } from './types.js';
+import { describeAnswers } from './azure-layout.js';
+import {
+  isDocumentAnalyzer,
+  type ArchiveRecord,
+  type FormAnswer,
+  type OcrEngineChoice,
+  type SourceFile,
+  type TextPage,
+} from './types.js';
 
 /**
  * The engine every document was read by until tesseract arrived. Its runs keep
@@ -151,8 +159,29 @@ export class IngestionPipeline {
       // A digital PDF arrives already transcribed. Only a scan reaches an OCR
       // engine, and then strictly one page at a time.
       const pages: TextPage[] = rendered.textPages ?? [];
+      let answers: FormAnswer[] = [];
       if (!rendered.textPages) {
-        for (const page of rendered.pages) pages.push(await recognizer.recognizePage(page));
+        if (isDocumentAnalyzer(recognizer)) {
+          // A layout engine reads the PDF itself, so the render above rasterised
+          // pages it will never look at. That waste buys the MAX_PAGES guard,
+          // which renderer.extractTextLayer enforces from pdftotext's page count
+          // before it decides the document is a scan — skipping the render would
+          // skip the guard, and this is the one engine billed per page.
+          // ponytail: a few wasted seconds per scan. Give PageRenderer a
+          // `rasterise: false` option if a long document ever makes it hurt.
+          const analyzed = await recognizer.analyzeDocument(source.bytes, source.mimeType);
+          pages.push(...analyzed.pages);
+          answers = analyzed.answers;
+        } else {
+          for (const page of rendered.pages) pages.push(await recognizer.recognizePage(page));
+        }
+      }
+      // Fold the marked answers back into the page they were read from. The
+      // vector search only ever sees chunk text, so an answer held solely as a
+      // structured row could never be retrieved by asking about it.
+      for (const page of pages) {
+        const described = describeAnswers(page.pageIndex, answers);
+        if (described) page.text = `${page.text}\n\n${described}`;
       }
       const parseDurationMs = Date.now() - parseStartedAt;
       const markdownFullText = pages.map((page) => `# Page ${page.pageIndex}\n\n${page.text}`).join('\n\n');
@@ -168,6 +197,7 @@ export class IngestionPipeline {
       const totalDurationMs = Date.now() - totalStartedAt;
       const persisted = await this.dependencies.ragStore.persistDocument({
         jobId: job.id,
+        answers,
         ragClaimId: claimed.ragClaimId,
         sourceArchiveId: source.archiveId,
         mappingVersion: this.dependencies.mappingVersion,

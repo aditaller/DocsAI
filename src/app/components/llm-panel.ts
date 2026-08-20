@@ -30,6 +30,7 @@ const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\
             <span class="llm-chip-wrap">
               <button
                 class="llm-chip"
+                [attr.data-testid]="'llm-doc-' + $index"
                 [class.on]="llmSelected().includes(j.jobId)"
                 [class.disabled]="j.status !== 'completed'"
                 (click)="j.status === 'completed' && toggleLlm.emit(j.jobId)"
@@ -44,6 +45,7 @@ const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\
                 <span class="not-arch">Not Archived</span>
                 <button
                   class="arch-btn"
+                  [attr.data-testid]="'llm-archive-' + $index"
                   (click)="archiveFile.emit(j.docId)"
                   [disabled]="archiving().includes(j.docId)"
                   title="Save this file to the record archive"
@@ -59,6 +61,7 @@ const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\
         <div class="field-label" style="margin-top:6px">Analysis Instructions</div>
         <textarea
           class="prompt-area"
+          data-testid="prompt"
           [value]="prompt()"
           (input)="promptChange.emit($any($event.target).value)"
           placeholder="e.g. Extract all claim dates, amounts, and party names…"
@@ -66,7 +69,7 @@ const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\
 
         <div class="llm-controls">
           <div class="select-wrap">
-            <select [value]="template()" (change)="templateChange.emit($any($event.target).value)">
+            <select data-testid="prompt-template" [value]="template()" (change)="templateChange.emit($any($event.target).value)">
               @for (t of templateEntries; track t[0]) {
                 <option [value]="t[0]">{{ t[0] === 'custom' ? 'Prompt Templates: Custom…' : 'Template: ' + t[1].label }}</option>
               }
@@ -74,7 +77,7 @@ const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\
             <span class="chev"><di-icon name="chevron" [size]="15" /></span>
           </div>
           <div class="select-wrap">
-            <select [value]="aiModelId()" (change)="aiModelChange.emit($any($event.target).value)" aria-label="AI model">
+            <select data-testid="ai-model" [value]="aiModelId()" (change)="aiModelChange.emit($any($event.target).value)" aria-label="AI model">
               @for (m of aiModels; track m.id) {
                 <option [value]="m.id">Model: {{ m.label }}</option>
               }
@@ -84,13 +87,13 @@ const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\
           <div class="spacer"></div>
           <span class="save-note">Saved &amp; linked to <b>{{ contextLabel() }}</b></span>
           @if (canChat()) {
-            <button class="act-btn primary" (click)="chat.emit()"><di-icon name="chat" [size]="15" /> Chat on Documents</button>
+            <button class="act-btn primary" data-testid="chat-open" (click)="chat.emit()"><di-icon name="chat" [size]="15" /> Chat on Documents</button>
           }
-          <button class="btn-analyze" (click)="analyze.emit()" [disabled]="!canAnalyze()">
+          <button class="btn-analyze" data-testid="analyze" (click)="analyze.emit()" [disabled]="!canAnalyze()">
             <di-icon name="sparkles" [size]="16" />
             {{ analyzing() ? 'Analyzing…' : 'Analyze with AI' }}
           </button>
-          <button class="btn-analyze" (click)="analyzeHebrew.emit()" [disabled]="!canAnalyze()" title="Same analysis, answered in Hebrew">
+          <button class="btn-analyze" data-testid="analyze-hebrew" (click)="analyzeHebrew.emit()" [disabled]="!canAnalyze()" title="Same analysis, answered in Hebrew">
             <di-icon name="sparkles" [size]="16" />
             {{ analyzing() ? 'Analyzing…' : 'Analyze with AI - HEB' }}
           </button>
@@ -198,14 +201,14 @@ export class LlmPanelComponent {
           </div>
 
           <div class="resp-actions">
-            <button class="act-btn" (click)="exportPdf.emit()"><di-icon name="download" [size]="15" /> Export to PDF</button>
-            <button class="act-btn" [class.saved]="r.saved" (click)="save.emit()" [disabled]="r.saved">
+            <button class="act-btn" data-testid="export-pdf" (click)="exportPdf.emit()"><di-icon name="download" [size]="15" /> Export to PDF</button>
+            <button class="act-btn" data-testid="save-response" [class.saved]="r.saved" (click)="save.emit()" [disabled]="r.saved">
               <di-icon [name]="r.saved ? 'check' : 'save'" [size]="15" /> {{ r.saved ? 'Saved to Record' : 'Save to Record' }}
             </button>
-            <button class="act-btn" (click)="rerun.emit()"><di-icon name="rerun" [size]="15" /> Re-run with New Prompt</button>
+            <button class="act-btn" data-testid="rerun-analysis" (click)="rerun.emit()"><di-icon name="rerun" [size]="15" /> Re-run with New Prompt</button>
             <div class="grow"></div>
             @if (canChat()) {
-              <button class="act-btn primary" (click)="chat.emit()"><di-icon name="chat" [size]="15" /> Chat on Documents</button>
+              <button class="act-btn primary" data-testid="chat-open-result" (click)="chat.emit()"><di-icon name="chat" [size]="15" /> Chat on Documents</button>
             }
           </div>
         </div>

@@ -8,6 +8,7 @@ import { OllamaClient } from './ollama.js';
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
+import { AzureLayoutClient } from './azure-layout.js';
 import { createTesseractRecognizer } from './tesseract.js';
 
 interface IngestArguments {
@@ -63,10 +64,12 @@ async function main(): Promise<void> {
     ocr:
       config.localOcrEngine === 'ollama'
         ? { id: 'ollama', recognizer: ollama }
-        : {
-            id: config.localOcrEngine,
-            recognizer: createTesseractRecognizer(config.localOcrEngine, config.tesseract),
-          },
+        : config.localOcrEngine === 'azure-layout'
+          ? { id: 'azure-layout', recognizer: new AzureLayoutClient({ baseUrl: config.azureLayout.baseUrl }) }
+          : {
+              id: config.localOcrEngine,
+              recognizer: createTesseractRecognizer(config.localOcrEngine, config.tesseract),
+            },
     mappingVersion: config.archiveMapping.version,
     embeddingDimensions: config.embeddingDimensions,
     chunkMaxCharacters: config.limits.chunkMaxChars,

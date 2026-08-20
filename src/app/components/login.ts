@@ -16,19 +16,19 @@ import { IconComponent } from './shared';
 
         <label class="login-field">
           <span>Username</span>
-          <input #u class="login-input" name="username" autocomplete="username" spellcheck="false" autofocus />
+          <input #u class="login-input" name="username" data-testid="login-username" autocomplete="username" spellcheck="false" autofocus />
         </label>
 
         <label class="login-field">
           <span>Password</span>
-          <input #p class="login-input" name="password" type="password" autocomplete="current-password" />
+          <input #p class="login-input" name="password" data-testid="login-password" type="password" autocomplete="current-password" />
         </label>
 
         @if (error()) {
           <p class="login-error" role="alert">{{ error() }}</p>
         }
 
-        <button class="btn-primary" type="submit" [disabled]="busy()">
+        <button class="btn-primary" type="submit" data-testid="login-submit" [disabled]="busy()">
           {{ busy() ? 'Signing in…' : 'Sign in' }}
         </button>
       </form>

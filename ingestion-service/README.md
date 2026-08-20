@@ -28,7 +28,8 @@ It runs in two ways over the same pipeline:
 - The service accepts binary data from a configured SQL binary column or, only
   when `contentColumn` is `null`, a `fullpath` contained below
   `ARCHIVE_FILE_ROOT`. It rejects path traversal, non-PDF/image magic bytes,
-  oversized input, excessive PDF pages, and non-loopback Ollama endpoints.
+  oversized input, excessive PDF pages, and non-loopback Ollama or Azure Layout
+  endpoints.
 - OCR text and secrets are never logged. Error messages are sanitized before
   they enter PostgreSQL run records.
 
@@ -57,14 +58,29 @@ It runs in two ways over the same pipeline:
    docker exec tesseract-ocr tesseract --list-langs   # expect at least eng, heb, osd
    ```
 
-4. Create a least-privilege SQL Server archive reader and PostgreSQL RAG writer.
-5. Copy `.env.example` to `.env`; set connection strings and replace the
+4. For the `azure-layout` engine, run the Document Intelligence Layout
+   container. It is the only engine that reads checkbox answers, and it needs an
+   Azure Document Intelligence resource — **for billing only**. The container
+   reads the document on this host and reports page counts; the document itself
+   never leaves. Budget 8 cores and 16 GB.
+
+   ```powershell
+   docker run -d --name azure-di-layout -p 5000:5000 --cpus 8 --memory 16g `
+     mcr.microsoft.com/azure-cognitive-services/form-recognizer/layout-4.0 `
+     EULA=accept billing=$env:FORM_RECOGNIZER_ENDPOINT apiKey=$env:FORM_RECOGNIZER_KEY
+   ```
+
+   Skip this if no one needs questionnaire answers: every other engine works
+   without it, and `GET /api/local/health` reports `azureLayout: false` rather
+   than failing.
+5. Create a least-privilege SQL Server archive reader and PostgreSQL RAG writer.
+6. Copy `.env.example` to `.env`; set connection strings and replace the
    mapping with the real, verified source columns. `claimIdColumn` must resolve
    to the numeric, existing local `rag.claim.id` that documents and chunks will
    reference. Prefer a SQL binary `contentColumn`. If source revisions are
    available, configure `modifiedAtColumn` (rowversion or modified time) for cheap
    source-aware idempotence.
-6. Review the migration against the deployed `rag` schema, especially its documented
+7. Review the migration against the deployed `rag` schema, especially its documented
    `documentchunk.contentembedding` / `parsercode` HNSW assumption and the
    `ingestionrun.documentid` nullability change, then run it:
 
@@ -72,7 +88,7 @@ It runs in two ways over the same pipeline:
    psql $env:POSTGRES_CONNECTION_STRING -f migrations/001_rag_store.sql
    ```
 
-7. Install and verify:
+8. Install and verify:
 
    ```powershell
    npm install
@@ -137,8 +153,8 @@ rule in the app's `proxy.conf.json`.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/local/health` | Reports PostgreSQL reachability, Ollama reachability, any missing models, whether the tesseract container answers, and the configured default engine. Drives whether the UI offers the mode at all. Ollama gates `ok` on both engines: it embeds and answers even when tesseract reads the pages. |
-| `POST /api/local/ingest?archiveId=&objectType=&objectId=&label=&fileName=&engine=` | Raw bytes in the body. Renders, OCRs every page, chunks, embeds, and persists, then returns the per-page text. `engine` is `tesseract-heb`, `tesseract-eng`, or `ollama`, and defaults to `LOCAL_OCR_ENGINE`. Identical bytes already indexed **by the same engine** are reused rather than re-OCR'd. |
+| `GET /api/local/health` | Reports PostgreSQL reachability, Ollama reachability, any missing models, whether the tesseract container answers, whether the Azure Layout container answers, and the configured default engine. Drives whether the UI offers the mode at all. Ollama gates `ok` on both engines: it embeds and answers even when tesseract reads the pages. |
+| `POST /api/local/ingest?archiveId=&objectType=&objectId=&label=&fileName=&engine=` | Raw bytes in the body. Renders, OCRs every page, chunks, embeds, and persists, then returns the per-page text. `engine` is `tesseract-auto`, `tesseract-heb`, `tesseract-eng`, `ollama`, or `azure-layout`, and defaults to `LOCAL_OCR_ENGINE`. Identical bytes already indexed **by the same engine** are reused rather than re-OCR'd. |
 | `POST /api/local/chat` | `{ prompt, documentIds, topK? }` → embeds the prompt, retrieves the nearest chunks from those documents only, and answers from them with page citations. |
 
 **This surface performs no authentication.** The `jwt` cookie the .NET API issues
@@ -162,6 +178,18 @@ so no record has to be provisioned in advance.
   loop). Both produce fluent-looking Hebrew that is largely invented. Use the
   `tesseract-heb` engine for Hebrew; it is also faster than the vision model by
   roughly an order of magnitude.
+- **No engine except `azure-layout` reads a checkbox.** On a scanned
+  questionnaire the answers are ticks in table cells, not words. Tesseract reads
+  the Hebrew questions on the metabolic-diseases form at 92–97% confidence and
+  still reports no answers, because its output is a flat word stream: a tick
+  surfaces as a stray `/`, `v` or `2` belonging to no row, and roughly a quarter
+  of them are dropped entirely. Measured on one page carrying 11 marks, tesseract
+  emitted 8 of them as junk tokens with no row association. Layout returns tables
+  with cell row/column indices and selection-mark state, which is what turns a
+  page of questions into a set of answers. Those answers are stored in
+  `rag.documentfield` and also written back into the page text, because retrieval
+  only ever reads chunk text — a structured row alone could not be found by
+  asking about it in the chat drawer.
 - **Pick the tesseract engine that matches the document.** Languages are loaded,
   not detected, and every loaded language competes for each glyph. `tesseract-heb`
   (`heb+eng`) reads a Hebrew document including its Latin dates and amounts;
@@ -176,7 +204,14 @@ so no record has to be provisioned in advance.
   told which languages to load rather than reporting what it found.
 - `PDF_RENDER_DPI` is the one lever that matters to tesseract. It defaults to
   poppler's 150; 300 reads small Hebrew type appreciably better and costs the
-  vision model extra image tokens.
+  vision model extra image tokens. It cannot add detail a scan does not have:
+  the archive's questionnaires embed a ~200 DPI JPEG, so 300 interpolates to a
+  glyph height tesseract prefers rather than revealing anything new. Irrelevant
+  to `azure-layout`, which is handed the PDF and never sees the render.
+- **`azure-layout` still pays for a render it does not use.** The pipeline
+  rasterises before dispatching to it, because `MAX_PAGES` is enforced from
+  pdftotext's page count inside the renderer, and this is the one engine billed
+  per page — skipping the render would skip the guard. A few seconds per scan.
 - OCR quality is determined by the selected engine. There is no remote fallback
   and no hosted endpoint. A vision model will also invent text for a blank or
   near-blank page rather than returning nothing.

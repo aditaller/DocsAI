@@ -54,6 +54,11 @@ const environmentSchema = z.object({
   // Which engine reads the pages. The HTTP server lets a request override this
   // per document; the batch CLI has no such caller and runs whatever is set here.
   LOCAL_OCR_ENGINE: z.enum(OCR_ENGINE_IDS).default('tesseract-auto'),
+  // Azure Document Intelligence's Layout model, run as a local container. It is
+  // held to the same loopback rule as Ollama: the container reads the document
+  // on this host and only reports page counts to Azure for billing, so the
+  // document itself must never be sent across a network to reach it.
+  AZURE_LAYOUT_URL: z.string().url().default('http://127.0.0.1:5000'),
   TESSERACT_CONTAINER: z.string().min(1).default('tesseract-ocr'),
   // Order matters: the first language is the primary one. `heb+eng` reads Hebrew
   // documents that carry Latin names, numbers and stamps — dropping `eng` there
@@ -100,6 +105,9 @@ export interface AppConfig {
     /** Language spec per tesseract engine id, keyed by the id the caller asks for. */
     langs: Record<'tesseract-heb' | 'tesseract-eng', string>;
   };
+  azureLayout: {
+    baseUrl: URL;
+  };
   localOcrEngine: OcrEngineId;
   embeddingDimensions: number;
   localApiPort: number;
@@ -131,16 +139,16 @@ function parseMapping(raw: string): ArchiveMapping {
   return mappingSchema.parse(parsed);
 }
 
-function assertLocalOllama(url: URL): void {
+function assertLoopback(url: URL, variable: string): void {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('OLLAMA_BASE_URL must use http or https');
+    throw new Error(`${variable} must use http or https`);
   }
   // A hostname such as `localhost` can be remapped through host/DNS
   // configuration. Use literal loopback addresses so this safety boundary does
   // not depend on name resolution.
   const loopbackHosts = new Set(['127.0.0.1', '::1', '[::1]']);
   if (!loopbackHosts.has(url.hostname)) {
-    throw new Error('OLLAMA_BASE_URL must resolve to a loopback host');
+    throw new Error(`${variable} must resolve to a loopback host`);
   }
 }
 
@@ -175,7 +183,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   }
 
   const baseUrl = new URL(env.OLLAMA_BASE_URL);
-  assertLocalOllama(baseUrl);
+  assertLoopback(baseUrl, 'OLLAMA_BASE_URL');
+  const azureLayoutUrl = new URL(env.AZURE_LAYOUT_URL);
+  assertLoopback(azureLayoutUrl, 'AZURE_LAYOUT_URL');
   return {
     ...(env.SQLSERVER_CONNECTION_STRING ? { sqlServerConnectionString: env.SQLSERVER_CONNECTION_STRING } : {}),
     postgresConnectionString: env.POSTGRES_CONNECTION_STRING,
@@ -194,6 +204,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       container: env.TESSERACT_CONTAINER,
       langs: { 'tesseract-heb': env.TESSERACT_LANGS_HEB, 'tesseract-eng': env.TESSERACT_LANGS_ENG },
     },
+    azureLayout: { baseUrl: azureLayoutUrl },
     localOcrEngine: env.LOCAL_OCR_ENGINE,
     embeddingDimensions: env.EMBEDDING_DIMENSIONS,
     localApiPort: env.LOCAL_API_PORT,

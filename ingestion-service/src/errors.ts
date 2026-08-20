@@ -6,6 +6,7 @@ export type ErrorCode =
   | 'source_limit'
   | 'renderer'
   | 'ollama'
+  | 'azure_layout'
   | 'database'
   | 'unknown';
 

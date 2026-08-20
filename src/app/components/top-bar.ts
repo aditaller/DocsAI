@@ -21,8 +21,9 @@ import { LocalHealth } from '../services/local-rag.service';
       </div>
       <div class="spacer"></div>
       <div class="mode-switch" role="group" aria-label="Processing engine">
-        <button [class.on]="mode() === 'azure'" (click)="modeChange.emit('azure')">Use Azure</button>
+        <button data-testid="mode-azure" [class.on]="mode() === 'azure'" (click)="modeChange.emit('azure')">Use Azure</button>
         <button
+          data-testid="mode-local"
           [class.on]="mode() === 'local'"
           [disabled]="!health()?.ok"
           [title]="localHint()"
@@ -34,6 +35,7 @@ import { LocalHealth } from '../services/local-rag.service';
       <span class="module-tag">Claims Workspace</span>
       <div
         class="avatar"
+        data-testid="user-avatar"
         [title]="auth.username() + ' — right-click to log out'"
         (contextmenu)="logout($event)"
       >

@@ -7,7 +7,7 @@ import { FileIconComponent, IconComponent } from './shared';
   selector: 'di-doc-preview-modal',
   imports: [IconComponent, FileIconComponent],
   template: `
-    <div class="modal-scrim" [class.open]="!!doc()" (click)="close.emit()"></div>
+    <div class="modal-scrim" data-testid="preview-scrim" [class.open]="!!doc()" (click)="close.emit()"></div>
     <div class="modal-wrap" [class.open]="!!doc()" [attr.aria-hidden]="!doc()">
       @if (doc(); as d) {
         <div class="doc-modal" role="dialog" [attr.aria-label]="'Preview of ' + d.name" (click)="$event.stopPropagation()">
@@ -21,7 +21,7 @@ import { FileIconComponent, IconComponent } from './shared';
                 @if (p()) { <span class="dm-ref">{{ p()!.ref }}</span> }
               </div>
             </div>
-            <button class="drawer-close" (click)="close.emit()" aria-label="Close preview"><di-icon name="close" /></button>
+            <button class="drawer-close" data-testid="preview-close" (click)="close.emit()" aria-label="Close preview"><di-icon name="close" /></button>
           </div>
 
           <div class="doc-modal-body">
@@ -107,13 +107,13 @@ import { FileIconComponent, IconComponent } from './shared';
           </div>
 
           <div class="doc-modal-foot">
-            <button class="dm-select" [class.on]="selected()" (click)="toggleSelect.emit(d.id)">
+            <button class="dm-select" data-testid="preview-toggle-select" [class.on]="selected()" (click)="toggleSelect.emit(d.id)">
               <span class="cb"><di-icon name="check" [size]="12" /></span>
               {{ selected() ? 'Selected for OCR' : 'Select for OCR' }}
             </button>
             <div class="grow"></div>
-            <button class="act-btn" (click)="close.emit()"><di-icon name="download" [size]="15" /> Download</button>
-            <button class="act-btn primary" (click)="close.emit()">Close</button>
+            <button class="act-btn" data-testid="preview-download" (click)="close.emit()"><di-icon name="download" [size]="15" /> Download</button>
+            <button class="act-btn primary" data-testid="preview-close-footer" (click)="close.emit()">Close</button>
           </div>
         </div>
       }

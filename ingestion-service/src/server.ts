@@ -9,6 +9,7 @@ import { averageConfidence, detectLanguage, OllamaClient, toPercent } from './ol
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore, type ChunkHit } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
+import { AzureLayoutClient } from './azure-layout.js';
 import { createTesseractRecognizer, detectScript, TesseractClient } from './tesseract.js';
 import { OCR_ENGINE_IDS, type OcrEngineChoice, type OcrEngineId, type TextPage } from './types.js';
 
@@ -98,8 +99,11 @@ async function main(): Promise<void> {
   const tesseractHeb = new TesseractClient({ container: config.tesseract.container, langs: config.tesseract.langs['tesseract-heb'] });
   // Every ingest names its engine; the request may override the configured one
   // per document, which is how they are compared on the same scan.
-  const engineFor = (id: OcrEngineId): OcrEngineChoice =>
-    id === 'ollama' ? { id, recognizer: ollama } : { id, recognizer: createTesseractRecognizer(id, config.tesseract) };
+  const engineFor = (id: OcrEngineId): OcrEngineChoice => {
+    if (id === 'ollama') return { id, recognizer: ollama };
+    if (id === 'azure-layout') return { id, recognizer: new AzureLayoutClient({ baseUrl: config.azureLayout.baseUrl }) };
+    return { id, recognizer: createTesseractRecognizer(id, config.tesseract) };
+  };
   // Held in a local rather than inlined, so health() can probe the binary.
   const pdfRenderer = new PopplerPdfRenderer({
     executable: config.pdfToPpmPath,
@@ -145,12 +149,13 @@ async function main(): Promise<void> {
   // Scope rows are created on demand now, so there is no per-record readiness to
   // report and this takes no parameters.
   async function health(): Promise<Record<string, unknown>> {
-    const [postgres, models, tesseractVersion, pdftoppm] = await Promise.all([
+    const [postgres, models, tesseractVersion, pdftoppm, azureLayout] = await Promise.all([
       ragStore.preflight().then(() => true).catch(() => false),
       listOllamaModels().catch(() => null),
       // Either client proves the container answers; they differ only in languages.
       tesseractHeb.version().catch(() => null),
       pdfRenderer.version().then(() => true).catch(() => false),
+      new AzureLayoutClient({ baseUrl: config.azureLayout.baseUrl }).version().then(() => true).catch(() => false),
     ]);
     const required = [config.ollama.ocrModel, config.ollama.embeddingModel, config.ollama.chatModel!];
     const missingModels = models ? required.filter((name) => !models.some((m) => m === name || m.startsWith(`${name}:`))) : required;
@@ -166,6 +171,11 @@ async function main(): Promise<void> {
       // Out of the `ok` gate for the same reason as tesseract: images still
       // ingest without poppler, only PDFs need it.
       pdftoppm,
+      // Also out of the gate: it is the only engine that reads checkbox answers,
+      // but every other kind of document ingests without it. The UI uses this to
+      // decide whether to offer `azure-layout` at all — the container is billed
+      // per page and is not expected to be running unless it is wanted.
+      azureLayout,
       engine: config.localOcrEngine,
     };
   }
@@ -187,8 +197,9 @@ async function main(): Promise<void> {
 
     // Held typed rather than reached through engineFor, so the language set it
     // settles on is readable when the response is built.
-    const tesseract = engine === 'ollama' ? null : createTesseractRecognizer(engine, config.tesseract);
-    const ocr: OcrEngineChoice = { id: engine, recognizer: tesseract ?? ollama };
+    const tesseract =
+      engine === 'ollama' || engine === 'azure-layout' ? null : createTesseractRecognizer(engine, config.tesseract);
+    const ocr: OcrEngineChoice = tesseract ? { id: engine, recognizer: tesseract } : engineFor(engine);
     const result = await pipeline.ingestSource({
       archiveId,
       sourceClaimId: scopeId,
@@ -227,7 +238,11 @@ async function main(): Promise<void> {
       engine,
       // The language set that actually ran, which under tesseract-auto is only
       // known once page 1 has been read — and not at all on a reuse that skipped OCR.
-      modelid: tesseract ? `tesseract:${tesseract.langs ?? 'osd'}` : config.ollama.ocrModel,
+      modelid: tesseract
+        ? `tesseract:${tesseract.langs ?? 'osd'}`
+        : engine === 'azure-layout'
+          ? 'azure:prebuilt-layout'
+          : config.ollama.ocrModel,
       // Page 1 speaks for the document; a mixed-language scan is not worth a per-page field yet.
       // Tesseract reports no language of its own, so its pages are read by script instead.
       language: engine === 'ollama' ? detectLanguage(pages[0]?.text ?? '') : detectScript(pages[0]?.text ?? ''),

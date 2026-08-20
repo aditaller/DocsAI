@@ -17,7 +17,7 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
         </div>
         <div class="spacer"></div>
         <div class="select-wrap ocr-engine">
-          <select [value]="engineId()" (change)="engineChange.emit($any($event.target).value)" aria-label="OCR engine">
+          <select data-testid="ocr-engine" [value]="engineId()" (change)="engineChange.emit($any($event.target).value)" aria-label="OCR engine">
             @for (e of engines(); track e.id) {
               <option [value]="e.id">OCR: {{ e.label }}</option>
             }
@@ -97,21 +97,21 @@ import { FileIconComponent, IconComponent, StatusPillComponent } from './shared'
                 <td><span class="ts">{{ j.ts }}</span></td>
                 <td>
                   @if (j.status === 'completed') {
-                    <button class="raw-link" (click)="viewRaw.emit(j)">
+                    <button class="raw-link" [attr.data-testid]="'ocr-view-raw-' + $index" (click)="viewRaw.emit(j)">
                       <di-icon name="eye" [size]="12" /> View Raw OCR
                     </button>
-                    <button class="raw-link" (click)="saveOcr.emit(j)" [disabled]="!j.ocr" title="Save full OCR result to gnr.archive_OCR">
+                    <button class="raw-link" [attr.data-testid]="'ocr-save-' + $index" (click)="saveOcr.emit(j)" [disabled]="!j.ocr" title="Save full OCR result to gnr.archive_OCR">
                       <di-icon name="save" [size]="12" /> Save OCR data
                     </button>
                   } @else {
                     <span class="muted" style="font-size:11.5px">—</span>
                   }
                   @if (j.status !== 'processing') {
-                    <button class="raw-link" (click)="rerun.emit(j)" [title]="'Run OCR again with ' + engine().label">
+                    <button class="raw-link" [attr.data-testid]="'ocr-rerun-' + $index" (click)="rerun.emit(j)" [title]="'Run OCR again with ' + engine().label">
                       <di-icon name="refresh" [size]="12" /> Re-run OCR
                     </button>
                   }
-                  <button class="raw-link" (click)="removeJob.emit(j)" title="Remove file from the board">
+                  <button class="raw-link" [attr.data-testid]="'ocr-remove-' + $index" (click)="removeJob.emit(j)" title="Remove file from the board">
                     <di-icon name="trash" [size]="12" /> Remove
                   </button>
                 </td>

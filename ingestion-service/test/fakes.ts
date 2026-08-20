@@ -2,7 +2,25 @@ import type { ArchivePreflight, ArchiveReader } from '../src/archive-reader.js';
 import type { ChatModel, OcrEmbedder } from '../src/ollama.js';
 import type { ChunkHit, JobRecord, PersistedDocument, RagStore } from '../src/rag-store.js';
 import type { PageRenderer } from '../src/renderer.js';
-import type { ArchiveRecord, PageRecognizer, RenderedDocument, RenderedPage, SourceFile, TextChunk, TextPage } from '../src/types.js';
+import type { AnalyzedDocument, ArchiveRecord, DocumentAnalyzer, FormAnswer, PageRecognizer, RenderedDocument, RenderedPage, SourceFile, TextChunk, TextPage } from '../src/types.js';
+
+/**
+ * Stands in for the Azure Layout container: a whole-document engine that reports
+ * answers, which no PageRecognizer can. Records the bytes it was handed so a
+ * test can prove the pipeline sent the original PDF rather than a page render.
+ */
+export class FakeDocumentAnalyzer implements DocumentAnalyzer {
+  receivedBytes?: Buffer;
+  receivedMimeType?: string;
+
+  constructor(private readonly result: AnalyzedDocument) {}
+
+  async analyzeDocument(bytes: Buffer, mimeType: string): Promise<AnalyzedDocument> {
+    this.receivedBytes = bytes;
+    this.receivedMimeType = mimeType;
+    return this.result;
+  }
+}
 
 export class FakePageRenderer implements PageRenderer {
   calls = 0;
@@ -77,7 +95,7 @@ export class FakeRagStore implements RagStore {
   lastSearch?: { embedding: number[]; documentIds: number[]; topK: number };
   completed?: { jobId: number; documentId: number };
   failure?: { jobId: number; state: 'RETRY_WAIT' | 'FAILED' };
-  persisted?: { chunks: TextChunk[]; embeddings: number[][]; pages: TextPage[] };
+  persisted?: { chunks: TextChunk[]; embeddings: number[][]; pages: TextPage[]; answers: FormAnswer[] };
   chunking?: { jobId: number; pageCount: number; markdownFullText: string; parseDurationMs: number };
   embedding?: { jobId: number; chunkCount: number };
   preflights: boolean[] = [];
@@ -118,7 +136,7 @@ export class FakeRagStore implements RagStore {
   }
 
   async persistDocument(input: Parameters<RagStore['persistDocument']>[0]): Promise<PersistedDocument> {
-    this.persisted = { chunks: input.chunks, embeddings: input.embeddings, pages: input.pages };
+    this.persisted = { chunks: input.chunks, embeddings: input.embeddings, pages: input.pages, answers: input.answers ?? [] };
     this.completed = { jobId: input.jobId, documentId: 99 };
     return { id: 99, ragDocumentId: 7, alreadyExisted: false };
   }
