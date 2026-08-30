@@ -66,6 +66,21 @@ export class CustomerService {
     return newId(text);
   }
 
+  /** Delete one row via the generic TALDAR delete route: ?entityname=&id=. */
+  async deleteRow(entityName: string, id: number): Promise<void> {
+    const url = new URL(DI_CONFIG.taldar.deleteEndpoint, location.origin);
+    url.searchParams.set('entityname', entityName);
+    url.searchParams.set('id', String(id));
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      credentials: 'include',
+      headers: this.auth.authHeader(),
+    });
+    const text = await res.text();
+    if (this.auth.sessionExpired(res.status, text)) throw new Error('Delete failed: session expired');
+    if (!res.ok) throw new Error(`Delete failed (${res.status} ${res.statusText})`);
+  }
+
   /** Master+detail insert via insertdatacomplex. `data` is the master row with each
    *  child collection embedded under a key equal to the child entity name; the server
    *  inserts the master, links each child (FK + createuser/dates auto-filled) and

@@ -10,7 +10,7 @@ import { FileIconComponent, IconComponent } from './shared';
   template: `
     <aside class="left-panel">
       <div class="panel-head">
-        <div class="eyebrow"><di-icon name="layers" [size]="13" /> Process Context</div>
+        <div class="eyebrow"> Process Context</div>
         <div class="ctx-bar">
           <div class="segmented" role="tablist">
             @for (t of types; track t) {
@@ -68,7 +68,7 @@ import { FileIconComponent, IconComponent } from './shared';
         @for (d of docs(); track d.id) {
           <!-- testids are positional: the recorder/replay needs a handle that means the
                same thing on both runs, and d.id is regenerated per session. -->
-          <div class="doc-card" [attr.data-testid]="'doc-card-' + $index" [class.selected]="d.selected" (click)="preview.emit(d)" title="Click to preview">
+          <div class="doc-card" [attr.data-testid]="'doc-card-' + $index" [class.selected]="d.selected">
             <div
               class="checkbox"
               [attr.data-testid]="'doc-checkbox-' + $index"
@@ -81,7 +81,15 @@ import { FileIconComponent, IconComponent } from './shared';
             </div>
             <di-file-icon [type]="d.type" />
             <div class="doc-meta">
-              <div class="name" [title]="d.name">{{ d.name }}</div>
+              <div
+                class="name"
+                [attr.data-testid]="'doc-preview-' + $index"
+                role="button"
+                tabindex="0"
+                [title]="d.name"
+                (click)="preview.emit(d)"
+                (keydown.enter)="preview.emit(d)"
+              >{{ d.name }}</div>
               <div class="sub">
                 <span class="date">{{ d.date }}</span>
                 <span class="cat-tag">{{ d.category }}</span>
@@ -111,16 +119,14 @@ import { FileIconComponent, IconComponent } from './shared';
               [title]="d.file ? 'Open file' : 'Preview'"
               (click)="$event.stopPropagation(); open.emit(d)"
             ><di-icon name="eye" [size]="15" /></span>
-            @if (d.file) {
-              <span
-                class="doc-open"
-                [attr.data-testid]="'doc-remove-' + $index"
-                role="button"
-                tabindex="0"
-                title="Remove file"
-                (click)="$event.stopPropagation(); remove.emit(d.id)"
-              ><di-icon name="trash" [size]="15" /></span>
-            }
+            <span
+              class="doc-open"
+              [attr.data-testid]="'doc-remove-' + $index"
+              role="button"
+              tabindex="0"
+              [title]="d.isFromArchive ? 'Delete from archive' : 'Remove file'"
+              (click)="$event.stopPropagation(); remove.emit(d.id)"
+            ><di-icon name="trash" [size]="15" /></span>
           </div>
         }
       </div>

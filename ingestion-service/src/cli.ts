@@ -64,6 +64,20 @@ async function main(): Promise<void> {
     ocr:
       config.localOcrEngine === 'ollama'
         ? { id: 'ollama', recognizer: ollama }
+        : config.localOcrEngine === 'deepseek-ocr'
+        ? {
+            id: 'deepseek-ocr',
+            // Recognition only; `ollama` above still embeds. The prompt follows
+            // from the model name, so this needs nothing but the swapped model.
+            recognizer: new OllamaClient({
+              baseUrl: config.ollama.baseUrl,
+              ocrModel: config.ollama.deepseekOcrModel,
+              embeddingModel: config.ollama.embeddingModel,
+              dimensions: config.embeddingDimensions,
+              numContext: config.ollama.numContext,
+              keepAlive: config.ollama.keepAlive,
+            }),
+          }
         : config.localOcrEngine === 'azure-layout'
           ? { id: 'azure-layout', recognizer: new AzureLayoutClient({ baseUrl: config.azureLayout.baseUrl }) }
           : {

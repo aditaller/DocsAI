@@ -1,7 +1,7 @@
 import { Component, computed, effect, ElementRef, input, output, signal, viewChild } from '@angular/core';
 import { RAW_OCR } from '../data/data';
 import { Job, RawOcr, THINKING_PREFIX, Toast } from '../models/models';
-import { FileIconComponent, IconComponent } from './shared';
+import { directionOf, FileIconComponent, IconComponent, linkifyPages, readPageClick } from './shared';
 
 @Component({
   selector: 'di-raw-ocr-drawer',
@@ -102,6 +102,9 @@ export class RawOcrDrawerComponent {
 interface ChatMsg {
   who: 'ai' | 'user';
   text: string;
+  /** Settled from the question, so an answer to a Hebrew prompt lays out RTL
+      whatever character its markup happens to begin with. */
+  dir: 'rtl' | 'ltr';
 }
 
 @Component({
@@ -129,7 +132,11 @@ interface ChatMsg {
               <div class="chat-av {{ m.who }}">
                 @if (m.who === 'ai') { <di-icon name="sparkles" [size]="15" /> } @else { DO }
               </div>
-              <div class="chat-bubble">{{ m.text }}</div>
+              @if (m.who === 'ai') {
+                <div class="chat-bubble" [dir]="m.dir" [innerHTML]="linked(m.text)" (click)="onBubbleClick($event)"></div>
+              } @else {
+                <div class="chat-bubble" [dir]="m.dir">{{ m.text }}</div>
+              }
             </div>
           }
           @if (pending()) {
@@ -159,7 +166,29 @@ export class ChatDrawerComponent {
   docNames = input.required<string[]>();
   /** Answers a question over the documents in context. `onPartial` streams the reply as it is written. */
   ask = input.required<(question: string, onPartial?: (partial: string) => void) => Promise<string>>();
+  /** Docs whose original can be fetched and opened; only those get a link. */
+  openableDocNames = input<string[]>([]);
   close = output<void>();
+  /** Same page-reference contract as the analysis result: open the original at that page. */
+  openOriginal = output<{ docName: string; page: number }>();
+
+  /**
+   * Rendered as real markup, so a model answering with a table or a list shows
+   * as one rather than as literal tags. Deliberately NOT escaped — but also not
+   * passed through bypassSecurityTrustHtml, so Angular's own sanitizer still runs
+   * on [innerHTML] and strips <script>, event handlers and javascript: URLs.
+   *
+   * That boundary matters here: this text is a model's summary of OCR'd archive
+   * documents, which are untrusted input. Sanitized HTML is the widest this may
+   * ever get — anything that trusts the string directly reopens XSS through a
+   * poisoned document.
+   */
+  linked = (text: string) => linkifyPages(text, this.docNames(), this.openableDocNames());
+
+  onBubbleClick(e: MouseEvent) {
+    const hit = readPageClick(e, this.docNames());
+    if (hit) this.openOriginal.emit(hit);
+  }
 
   msgs = signal<ChatMsg[]>([]);
   input = signal('');
@@ -170,7 +199,11 @@ export class ChatDrawerComponent {
     effect(() => {
       if (this.open()) {
         this.msgs.set([
-          { who: 'ai', text: "I've loaded the selected documents into context. Ask me anything about this claim — dates, amounts, parties, or inconsistencies." },
+          {
+            who: 'ai',
+            text: "I've loaded the selected documents into context. Ask me anything about this claim — dates, amounts, parties, or inconsistencies.",
+            dir: 'ltr',
+          },
         ]);
         this.input.set('');
         this.pending.set(false);
@@ -186,13 +219,17 @@ export class ChatDrawerComponent {
   async send() {
     const q = this.input().trim();
     if (!q || this.pending()) return;
-    this.msgs.update((m) => [...m, { who: 'user', text: q }]);
+    // Asked in Hebrew, answered in Hebrew: the whole turn lays out RTL, including
+    // any table or list the model returns. Read off the question rather than the
+    // reply, so a Hebrew answer opening with a claim number still reads right.
+    const dir = directionOf(q);
+    this.msgs.update((m) => [...m, { who: 'user', text: q, dir }]);
     this.input.set('');
     this.pending.set(true);
     // One placeholder bubble, rewritten in place as tokens arrive, so the answer
     // reads as it is written instead of appearing all at once at the end.
     let streaming = false;
-    const replaceLast = (text: string) => this.msgs.update((m) => [...m.slice(0, -1), { who: 'ai', text }]);
+    const replaceLast = (text: string) => this.msgs.update((m) => [...m.slice(0, -1), { who: 'ai', text, dir }]);
     try {
       const reply = await this.ask()(q, (partial) => {
         // Reasoning arrives before the answer; show only its tail so the bubble
@@ -202,20 +239,20 @@ export class ChatDrawerComponent {
           : partial;
         if (!streaming) {
           streaming = true;
-          this.msgs.update((m) => [...m, { who: 'ai', text }]);
+          this.msgs.update((m) => [...m, { who: 'ai', text, dir }]);
         } else {
           replaceLast(text);
         }
       });
       const text = reply || 'No answer came back for that question.';
       if (streaming) replaceLast(text);
-      else this.msgs.update((m) => [...m, { who: 'ai', text }]);
+      else this.msgs.update((m) => [...m, { who: 'ai', text, dir }]);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'The question failed.';
       // Keep whatever was already streamed and say it was cut short, rather than
       // replacing a partial answer with a bare error.
-      if (streaming) this.msgs.update((m) => [...m, { who: 'ai', text: `⚠ ${message}` }]);
-      else this.msgs.update((m) => [...m, { who: 'ai', text: message }]);
+      if (streaming) this.msgs.update((m) => [...m, { who: 'ai', text: `⚠ ${message}`, dir }]);
+      else this.msgs.update((m) => [...m, { who: 'ai', text: message, dir }]);
     } finally {
       this.pending.set(false);
     }

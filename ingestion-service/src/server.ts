@@ -93,6 +93,18 @@ async function main(): Promise<void> {
     onPromptTokens: (tokens) =>
       logger.info('chat_prompt_tokens', { tokens, contextLimit: config.ollama.numContext, allowance: Math.floor(config.ollama.numContext * ANSWER_HEADROOM) }),
   });
+  // The same client against a different vision model, so the two can be run on
+  // one scan from the engine picker. It only ever recognizes pages; embedding and
+  // chat stay on `ollama` above, and the prompt follows from the model name.
+  const deepseekOcr = new OllamaClient({
+    baseUrl: config.ollama.baseUrl,
+    ocrModel: config.ollama.deepseekOcrModel,
+    embeddingModel: config.ollama.embeddingModel,
+    dimensions: config.embeddingDimensions,
+    numContext: config.ollama.numContext,
+    keepAlive: config.ollama.keepAlive,
+    onTruncated: (pageIndex) => logger.warn('ocr_page_truncated', { pageIndex }),
+  });
   // Health only: proves the container answers. The engines below build their own,
   // because tesseract-auto remembers the script it read and two concurrent
   // uploads must not share that memory.
@@ -101,6 +113,7 @@ async function main(): Promise<void> {
   // per document, which is how they are compared on the same scan.
   const engineFor = (id: OcrEngineId): OcrEngineChoice => {
     if (id === 'ollama') return { id, recognizer: ollama };
+    if (id === 'deepseek-ocr') return { id, recognizer: deepseekOcr };
     if (id === 'azure-layout') return { id, recognizer: new AzureLayoutClient({ baseUrl: config.azureLayout.baseUrl }) };
     return { id, recognizer: createTesseractRecognizer(id, config.tesseract) };
   };
@@ -177,6 +190,11 @@ async function main(): Promise<void> {
       // per page and is not expected to be running unless it is wanted.
       azureLayout,
       engine: config.localOcrEngine,
+      // The two vision engines are named by whatever model is configured, so the
+      // picker can label them for real instead of saying "Ollama Vision" and
+      // leaving the operator to guess which model just read the page.
+      ocrModel: config.ollama.ocrModel,
+      deepseekOcrModel: config.ollama.deepseekOcrModel,
     };
   }
 
@@ -198,7 +216,9 @@ async function main(): Promise<void> {
     // Held typed rather than reached through engineFor, so the language set it
     // settles on is readable when the response is built.
     const tesseract =
-      engine === 'ollama' || engine === 'azure-layout' ? null : createTesseractRecognizer(engine, config.tesseract);
+      engine === 'ollama' || engine === 'deepseek-ocr' || engine === 'azure-layout'
+        ? null
+        : createTesseractRecognizer(engine, config.tesseract);
     const ocr: OcrEngineChoice = tesseract ? { id: engine, recognizer: tesseract } : engineFor(engine);
     const result = await pipeline.ingestSource({
       archiveId,
@@ -242,9 +262,13 @@ async function main(): Promise<void> {
         ? `tesseract:${tesseract.langs ?? 'osd'}`
         : engine === 'azure-layout'
           ? 'azure:prebuilt-layout'
-          : config.ollama.ocrModel,
+          : engine === 'deepseek-ocr'
+            ? config.ollama.deepseekOcrModel
+            : config.ollama.ocrModel,
       // Page 1 speaks for the document; a mixed-language scan is not worth a per-page field yet.
-      // Tesseract reports no language of its own, so its pages are read by script instead.
+      // Only `ollama` is asked for a `Language:` line. Tesseract reports no language
+      // of its own, and DeepSeek-OCR's prompt is fixed and cannot ask for one, so
+      // both are read by script off the text instead.
       language: engine === 'ollama' ? detectLanguage(pages[0]?.text ?? '') : detectScript(pages[0]?.text ?? ''),
       // Same 0–100 scale Azure Document Intelligence reports. ponytail: not persisted,
       // so a reused (already-indexed) document reports null; add a documentpage

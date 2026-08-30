@@ -46,6 +46,8 @@ export const DI_CONFIG = {
     // Master+detail insert: POST ?entity=<master> with child rows embedded under a
     // key named for the child entity; server inserts master then links each child.
     insertComplexEndpoint: '/api/Metadata/insertdatacomplex',
+    // Generic row delete: POST ?entityname=gnr.archive&id=<archiveid>
+    deleteEndpoint: '/api/Metadata/delete',
     // Multipart file upload → saves the file to disk and inserts a gnr.archive row
     // (fullpath): POST ?entityname=&entityid=&documenttypeid=&note= with form-data files.
     uploadEndpoint: '/api/transferdata/upload',
@@ -54,6 +56,7 @@ export const DI_CONFIG = {
     documentTypes: { General: 1 } as Record<string, number>,
     defaultDocumentTypeId: 1,
     archiveEntity: 'gnr.v_archive',
+    archiveTable: 'gnr.archive', // writable table behind the view — deletes go here
     archiveRows: 20,
     userId: 10,
   },
@@ -77,7 +80,15 @@ export const DI_CONFIG = {
       { id: 'tesseract-auto', label: 'Tesseract · auto-detect', short: 'Tesseract', modelId: 'tesseract-auto' },
       { id: 'tesseract-heb', label: 'Tesseract HEB · heb+eng', short: 'Tesseract HEB', modelId: 'tesseract-heb' },
       { id: 'tesseract-eng', label: 'Tesseract ENG · eng', short: 'Tesseract ENG', modelId: 'tesseract-eng' },
-      { id: 'ollama', label: 'Ollama Vision', short: 'Ollama', modelId: 'ollama' },
+      // Both vision engines are relabelled with the model the service actually
+      // has configured once /health answers (see app.ts engineOptions). These
+      // labels are only the placeholder shown until then, so they name the
+      // current defaults rather than the engine.
+      { id: 'ollama', label: 'qwen2.5vl:7b', short: 'qwen2.5vl', modelId: 'ollama' },
+      // The second vision engine, so the two models can be run against the same
+      // scan from this picker. Its model is OLLAMA_DEEPSEEK_OCR_MODEL, not
+      // OLLAMA_OCR_MODEL, and it carries its own prompt.
+      { id: 'deepseek-ocr', label: 'deepseek-ocr:latest', short: 'deepseek-ocr', modelId: 'deepseek-ocr' },
       // The only engine that reads checkbox answers off a questionnaire. Runs in
       // a local container and is billed per page, so it is offered but never the
       // default; health reports `azureLayout` for whether it is up at all.

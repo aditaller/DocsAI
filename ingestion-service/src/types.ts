@@ -112,9 +112,16 @@ export function isDocumentAnalyzer(
  * `azure-layout` is the odd one out: it is the only engine that reports which
  * checkbox was ticked, which is the only way a questionnaire's answers can be
  * read at all. It runs in a local container and is billed per page.
+ *
+ * `ollama` and `deepseek-ocr` are both vision models on the same Ollama host and
+ * differ only in which model reads the page. They are listed separately so the
+ * two can be compared on one scan from the engine picker; each carries its own
+ * prompt, because DeepSeek-OCR ignores a freeform instruction and echoes it
+ * until it runs out of context.
  */
 export const OCR_ENGINE_IDS = [
   'ollama',
+  'deepseek-ocr',
   'tesseract-auto',
   'tesseract-heb',
   'tesseract-eng',

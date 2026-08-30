@@ -81,6 +81,8 @@ export interface RawOcr {
 export interface PromptTemplate {
   label: string;
   text: string;
+  /** Prepended to the user-edited prompt as the system message. */
+  system?: string;
 }
 
 export interface Preview {

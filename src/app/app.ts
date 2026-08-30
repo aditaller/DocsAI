@@ -100,6 +100,7 @@ const HEBREW_INSTRUCTION =
             [aiModelId]="aiModelId()"
             [archiving]="archivingIds()"
             (toggleLlm)="toggleLlm($event)"
+            (selectAll)="selectAllLlm($event)"
             (promptChange)="onPromptChange($event)"
             (templateChange)="onTemplateChange($event)"
             (aiModelChange)="aiModelId.set($event)"
@@ -112,12 +113,11 @@ const HEBREW_INSTRUCTION =
             [response]="response()"
             [analyzing]="analyzing()"
             [canChat]="canChat()"
-            [pdfDocNames]="pdfDocNames()"
+            [openableDocNames]="openableDocNames()"
             (exportPdf)="onExport()"
             (save)="onSave()"
             (rerun)="onRerun()"
             (chat)="chatOpen.set(true)"
-            (openPages)="onOpenPages($event)"
             (openOriginal)="onOpenOriginal($event)"
           />
         </div>
@@ -129,8 +129,15 @@ const HEBREW_INSTRUCTION =
         (toggleSelect)="onToggleDoc($event)"
         (close)="previewDoc.set(null)"
       />
+      <di-chat-drawer
+        [open]="chatOpen()"
+        [docNames]="chatDocs()"
+        [openableDocNames]="openableDocNames()"
+        [ask]="askDocs"
+        (close)="chatOpen.set(false)"
+        (openOriginal)="onOpenOriginal($event)"
+      />
       <di-raw-ocr-drawer [job]="rawJob()" [pages]="rawPages()" [ocrModelId]="ocrEngine().modelId" (close)="openRaw(null)" />
-      <di-chat-drawer [open]="chatOpen()" [docNames]="chatDocs()" [ask]="askDocs" (close)="chatOpen.set(false)" />
       <di-toasts [toasts]="toasts()" />
     </div>
     }
@@ -155,11 +162,28 @@ export class App {
   aiModelId = signal(DI_CONFIG.ai.defaultId);
 
   // ---- Engine mode ---- 'azure' keeps the cloud OCR + chat pair; 'local' runs
-  // OCR into pgvector and answers from retrieved chunks.
-  mode = signal<'azure' | 'local'>('azure');
+  // OCR into pgvector and answers from retrieved chunks. Local is the default;
+  // the constructor drops back to 'azure' if health says the service is not up,
+  // because its own toggle is disabled while that is true.
+  mode = signal<'azure' | 'local'>('local');
   localHealth = signal<LocalHealth | null>(null);
 
-  engineOptions = computed(() => (this.mode() === 'local' ? DI_CONFIG.local.engines : DI_CONFIG.ocr.engines));
+  // The two vision engines are named by whichever model the service has
+  // configured, so the picker says `qwen2.5vl:7b` rather than "Ollama Vision" and
+  // stays honest when the env var is swapped. Falls back to the static labels
+  // until health has answered, and on a service too old to report the names.
+  engineOptions = computed(() => {
+    if (this.mode() !== 'local') return DI_CONFIG.ocr.engines;
+    const health = this.localHealth();
+    const named: Record<string, string | undefined> = {
+      ollama: health?.ocrModel,
+      'deepseek-ocr': health?.deepseekOcrModel,
+    };
+    return DI_CONFIG.local.engines.map((engine) => {
+      const model = named[engine.id];
+      return model ? { ...engine, label: model, short: model } : engine;
+    });
+  });
   activeEngineId = computed(() => (this.mode() === 'local' ? this.localEngineId() : this.ocrEngineId()));
   ocrEngine = computed(() => findEngine(this.engineOptions(), this.activeEngineId()));
   engineLabel = computed(() => (this.mode() === 'local' ? `${DI_CONFIG.local.label} · ${this.ocrEngine().short}` : this.ocrEngine().short));
@@ -168,6 +192,8 @@ export class App {
   llmSelected = signal<string[]>([]);
   prompt = signal(DEFAULT_PROMPT);
   template = signal('custom');
+  /** System prompt of the last picked template; survives prompt edits, cleared by "Custom…". */
+  sysPrompt = signal('');
   analyzing = signal(false);
   response = signal<AnalysisResponse | null>(null);
   archivingIds = signal<string[]>([]); // jobIds mid-archive, to disable their Archive button
@@ -198,9 +224,10 @@ export class App {
     return r ? done.filter((j) => r.docNames.includes(j.name)) : done;
   });
   chatDocs = computed(() => this.chatJobs().map((j) => j.name));
-  // Docs the "open at this page" link can serve: a PDF (only format with a page
-  // fragment) that is still loadable as bytes or an archive path.
-  pdfDocNames = computed(() => this.docs().filter((d) => d.type === 'pdf' && (d.file || d.path)).map((d) => d.name));
+  // Docs a page reference can open: the original bytes must be reachable (an upload's
+  // File, or an archive path). PDFs land on the referenced page; an image is one page,
+  // so it just opens.
+  openableDocNames = computed(() => this.docs().filter((d) => d.file || d.path).map((d) => d.name));
   canChat = computed(() => this.chatJobs().some((j) => j.ragDocumentId != null));
 
   /** Bound so the drawer can hold it as a plain input; routes questions through the active engine. */
@@ -224,7 +251,12 @@ export class App {
   ) {
     // Appearance is owned entirely by styles.scss now. The old inline --accent
     // overrides set here would win over the stylesheet's cascade, so they're gone.
-    void this.refreshLocalHealth();
+    // Only at startup: an unreachable ingestion service would otherwise leave the
+    // app in local mode with the local toggle disabled and nothing able to run.
+    // A later failure is left alone — the user chose that mode deliberately.
+    void this.refreshLocalHealth().then(() => {
+      if (!this.localHealth()?.ok) this.mode.set('azure');
+    });
   }
 
   /** Keeps the toggle honest about whether Postgres and Ollama are both ready. */
@@ -308,9 +340,22 @@ export class App {
     }
   }
 
-  onRemoveDoc(id: string) {
+  // Uploads are dropped from the list only; an archived doc is really deleted from
+  // gnr.archive first — behind a confirm, since that one can't be undone.
+  async onRemoveDoc(id: string) {
     const d = this.docs().find((x) => x.id === id);
-    if (!d?.file) return; // only server-loaded uploads are removable
+    if (!d) return;
+    if (d.archiveId != null) {
+      if (!confirm('Are you sure you want to delete this document from archive ?')) return;
+      try {
+        await this.customerService.deleteRow(DI_CONFIG.taldar.archiveTable, d.archiveId);
+        this.addToast(`Deleted ${d.name} from archive`, 'success');
+      } catch (err) {
+        console.error('Archive delete failed:', err);
+        this.addToast(`Could not delete ${d.name} from archive`, 'error');
+        return; // leave the row on screen — the server still has it
+      }
+    }
     this.docs.update((ds) => ds.filter((x) => x.id !== id));
     this.jobs.update((js) => js.filter((j) => j.docId !== id)); // drop any OCR job for it
   }
@@ -347,7 +392,8 @@ export class App {
   }
 
   /**
-   * A page reference's companion link: the original PDF, opened at that page.
+   * What a page reference in an answer opens: the original document itself — a PDF
+   * scrolled to that page, an image as-is (one page, nothing to scroll to).
    *
    * Deliberately not onOpenDoc's route. The archive endpoint answers as a
    * download, and a downloaded file is handed to Adobe, which never sees a
@@ -362,7 +408,11 @@ export class App {
     }
     try {
       const file = await this.resolveFile(doc);
-      this.openBlob(new Blob([file], { type: 'application/pdf' }), `#page=${ref.page}`, doc.name);
+      const pdf = doc.type === 'pdf';
+      // The File carries the server's own type for archive downloads; fall back to
+      // the extension so an image still opens inline instead of downloading.
+      const type = pdf ? 'application/pdf' : file.type || mimeOf(doc.name);
+      this.openBlob(new Blob([file], { type }), pdf ? `#page=${ref.page}` : '', doc.name);
     } catch (err) {
       this.addToast(err instanceof Error ? err.message : `Could not open ${ref.docName}`, 'error');
     }
@@ -580,6 +630,10 @@ export class App {
     }
   }
 
+  selectAllLlm(on: boolean) {
+    this.llmSelected.set(on ? this.jobs().filter((j) => j.status === 'completed').map((j) => j.jobId) : []);
+  }
+
   toggleLlm(jobId: string) {
     this.llmSelected.update((s) => (s.includes(jobId) ? s.filter((x) => x !== jobId) : [...s, jobId]));
   }
@@ -592,6 +646,7 @@ export class App {
   onTemplateChange(v: string) {
     this.template.set(v);
     const t = TEMPLATES[v];
+    this.sysPrompt.set(t?.system ?? '');
     if (t && t.text) this.prompt.set(t.text);
   }
 
@@ -602,15 +657,6 @@ export class App {
   }
 
   /** A page reference clicked in the answer: open that document's OCR at those pages. */
-  onOpenPages(ref: { docName: string; from: number; to: number }) {
-    const job = this.jobs().find((j) => j.name === ref.docName && j.status === 'completed');
-    if (!job) {
-      this.addToast(`${ref.docName} is no longer loaded`, 'info');
-      return;
-    }
-    this.openRaw(job, [ref.from, ref.to]);
-  }
-
   async onAnalyze(hebrew = false) {
     const sel = this.jobs().filter((j) => this.llmSelected().includes(j.jobId) && j.status === 'completed');
     if (!sel.length) {
@@ -626,7 +672,7 @@ export class App {
     this.response.set(null);
 
     const startedAt = performance.now();
-    const instruction = hebrew ? `${this.prompt()}\n\n${HEBREW_INSTRUCTION}` : this.prompt();
+    const instruction = [this.sysPrompt(), this.prompt(), hebrew ? HEBREW_INSTRUCTION : ''].filter(Boolean).join('\n\n');
     try {
       // Local streams: the answer card is created empty and filled as tokens
       // land, so a long extraction is readable while it is still being written.
@@ -842,3 +888,10 @@ export class App {
     }
   }
 }
+
+// ponytail: just the image types an OCR document can be; anything else keeps whatever
+// type the fetch reported and the browser decides (inline or download).
+const mimeOf = (name: string) => {
+  const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+  return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', tif: 'image/tiff', tiff: 'image/tiff', bmp: 'image/bmp' }[ext] ?? '';
+};

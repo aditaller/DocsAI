@@ -57,6 +57,10 @@ export interface LocalHealth {
   tesseract: boolean;
   /** Whether poppler's pdftoppm ran. Images ingest without it; only PDFs need it. */
   pdftoppm: boolean;
+  /** Model behind the `ollama` engine (OLLAMA_OCR_MODEL), for labelling the picker. */
+  ocrModel?: string;
+  /** Model behind the `deepseek-ocr` engine (OLLAMA_DEEPSEEK_OCR_MODEL). */
+  deepseekOcrModel?: string;
 }
 
 /**

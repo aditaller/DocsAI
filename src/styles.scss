@@ -18,7 +18,7 @@
   --ink:          #141C2B;
   --ink-2:        #44506A;
   --ink-3:        #6E7A91;
-  --ink-4:        #97A1B2;
+  --ink-4:        #494b50;
 
   /* ---------- rules ---------- */
   --rule:         #DCD4C6;   /* on canvas */
@@ -183,7 +183,7 @@ di-status-pill { display: inline-flex; }
 .topbar .spacer { flex: 1; }
 .topbar .module-tag {
   font-family: var(--font-mono);
-  font-size: 10px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
+  font-size: 11px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
   color: var(--ink-2);
   padding: 5px 10px;
   border: 1px solid var(--rule-strong);
@@ -198,7 +198,7 @@ di-status-pill { display: inline-flex; }
 }
 .topbar .mode-switch button {
   font-family: var(--font-mono);
-  font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
+  font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
   color: var(--ink-3);
   background: transparent;
   border: 0; padding: 6px 12px;
@@ -222,7 +222,7 @@ di-status-pill { display: inline-flex; }
 .main {
   flex: 1 1 auto; min-height: 0;
   display: grid;
-  grid-template-columns: minmax(340px, 30%) 1fr;
+  grid-template-columns: minmax(289px, 25.5%) 1fr;
 }
 
 /* ===================== LEFT PANEL ===================== */
@@ -238,7 +238,7 @@ di-status-pill { display: inline-flex; }
   display: flex; align-items: center; gap: 8px;
   margin-bottom: 14px;
   font-family: var(--font-mono);
-  font-size: 10px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
+  font-size: 11px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
   color: var(--ink-3);
 }
 .panel-head .eyebrow .di-icon { color: var(--ink-4); }
@@ -362,7 +362,6 @@ di-status-pill { display: inline-flex; }
   border-bottom: 1px solid var(--rule);
   border-left: 3px solid transparent;
   border-radius: 0;
-  cursor: pointer;
   transition: background var(--dur-fast) ease;
 }
 .doc-card:hover { background: rgba(255, 255, 255, 0.55); transform: none; }
@@ -403,7 +402,7 @@ di-status-pill { display: inline-flex; }
 .file-icon .ext {
   position: static;
   font-family: var(--font-mono);
-  font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .file-icon.pdf   { color: var(--flag);   border-color: rgba(176, 52, 31, 0.32); }
@@ -415,7 +414,11 @@ di-status-pill { display: inline-flex; }
   font-size: 13px; font-weight: 500; color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   margin-bottom: 3px;
+  /* inline-block so the click target is the text itself, not the row's full width */
+  display: inline-block; max-width: 100%; vertical-align: top;
+  cursor: pointer;
 }
+.doc-meta .name:hover { text-decoration: underline; text-underline-offset: 2px; }
 .doc-card.selected .doc-meta .name { font-weight: 600; }
 
 /* nowrap + clip: a long meta line must never push the row to two lines */
@@ -440,7 +443,7 @@ di-status-pill { display: inline-flex; }
 }
 .doc-meta .cat-tag {
   font-family: var(--font-mono);
-  font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--ink-3);
   background: none; border: none; padding: 0;
 }
@@ -448,7 +451,7 @@ di-status-pill { display: inline-flex; }
 
 .not-arch {
   font-family: var(--font-mono);
-  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--warn);
 }
 .not-arch::before { content: "· "; color: var(--ink-4); }
@@ -565,7 +568,7 @@ di-status-pill { display: inline-flex; }
   display: block;
   margin-top: 7px;
   font-family: var(--font-mono);
-  font-size: 9px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase;
+  font-size: 10px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--ink-4);
 }
 
@@ -584,10 +587,10 @@ di-status-pill { display: inline-flex; }
 .zone-head .z-title {
   font-family: var(--font-display);
   font-variation-settings: 'SOFT' 0, 'WONK' 0, 'opsz' 30;
-  font-weight: 500; font-size: 21px; letter-spacing: -0.012em;
+  font-weight: 500; font-size: 23px; letter-spacing: -0.012em;
   color: var(--ink);
 }
-.zone-head .z-sub { font-size: 12.5px; color: var(--ink-3); margin-top: 0; }
+.zone-head .z-sub { font-size: 16px; color: var(--ink-3); margin-top: 0; }
 .zone-head .spacer { flex: 1; }
 .zone-body { grid-column: 2; min-width: 0; padding: 0; }
 
@@ -599,7 +602,7 @@ di-status-pill { display: inline-flex; }
 .ocr-table thead th {
   text-align: left;
   font-family: var(--font-mono);
-  font-size: 9.5px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
+  font-size: 12px; font-weight: 500; letter-spacing: 0.13em; text-transform: uppercase;
   color: var(--ink-4);
   padding: 0 12px 9px 0;
   border-bottom: 1px solid var(--ink);
@@ -833,21 +836,14 @@ tr.row-processing td { background: none; animation: none; }
   text-wrap: pretty;
 }
 .resp-body .summary .hl { color: var(--ink); font-weight: 600; }
-/* page references in an answer open that page's OCR text */
-.resp-body .summary .page-ref {
+/* page references in an answer open the original document at that page */
+.page-ref {
   color: var(--signal);
   font-family: var(--font-mono); font-size: 0.82em;
   text-decoration: none; border-bottom: 1px solid currentColor;
   cursor: pointer; white-space: nowrap;
 }
-.resp-body .summary .page-ref:hover { background: rgba(0, 0, 0, 0.05); }
-/* companion link: the original PDF, opened at that page */
-.resp-body .summary .page-open {
-  color: var(--ink-4);
-  font-size: 0.78em; text-decoration: none;
-  margin-inline-start: 3px; cursor: pointer;
-}
-.resp-body .summary .page-open:hover { color: var(--signal); }
+.page-ref:hover { background: rgba(0, 0, 0, 0.05); }
 
 .resp-section-title {
   display: flex; align-items: center; gap: 12px;
@@ -1086,6 +1082,26 @@ tr.row-processing td { background: none; animation: none; }
 .chat-bubble { font-size: 13px; line-height: 1.6; padding: 11px 14px; border-radius: var(--r); }
 .chat-msg.ai .chat-bubble { background: var(--canvas); border: 1px solid var(--rule); color: var(--ink); }
 .chat-msg.user .chat-bubble { background: var(--ink); color: var(--doc); }
+
+/* An AI bubble renders the model's markup, so the elements it actually reaches
+   for need to be legible at 13px. Scoped to the bubble: these are answer
+   internals, not page furniture. */
+.chat-msg.ai .chat-bubble {
+  p { margin: 0 0 8px; &:last-child { margin-bottom: 0; } }
+  h1, h2, h3, h4 { font-size: 13px; font-weight: 600; margin: 12px 0 6px; &:first-child { margin-top: 0; } }
+  ul, ol { margin: 0 0 8px; padding-inline-start: 20px; &:last-child { margin-bottom: 0; } }
+  li { margin-bottom: 3px; }
+  /* Wide tables scroll inside the bubble rather than widening the drawer. */
+  table { display: block; overflow-x: auto; border-collapse: collapse; margin: 0 0 8px; font-size: 12px; }
+  th, td { border: 1px solid var(--rule); padding: 5px 8px; text-align: start; }
+  th { background: var(--doc); font-weight: 600; }
+  pre { overflow-x: auto; background: var(--doc); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; margin: 0 0 8px; }
+  code { font-family: var(--font-mono); font-size: 11.5px; }
+  pre code { font-size: 11px; }
+  img { max-width: 100%; height: auto; }
+  blockquote { margin: 0 0 8px; padding-inline-start: 10px; border-inline-start: 2px solid var(--rule); color: var(--ink-3); }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 10px 0; }
+}
 .chat-ctx {
   font-family: var(--font-mono);
   font-size: 10.5px; letter-spacing: 0.04em; color: var(--ink-3);
@@ -1342,7 +1358,7 @@ tr.row-processing td { background: none; animation: none; }
 
 /* ===================== RESPONSIVE ===================== */
 @media (max-width: 1080px) {
-  .main { grid-template-columns: minmax(300px, 38%) 1fr; }
+  .main { grid-template-columns: minmax(255px, 32.3%) 1fr; }
   .right-panel { padding: 0 26px 56px; }
   .zone { grid-template-columns: 42px 1fr; column-gap: 18px; }
   .zone-mark .n { font-size: 24px; }

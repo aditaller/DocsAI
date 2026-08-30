@@ -38,6 +38,10 @@ const environmentSchema = z.object({
   ARCHIVE_FILE_ROOT: z.string().min(1).optional(),
   OLLAMA_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   OLLAMA_OCR_MODEL: z.string().min(1),
+  // The model behind the `deepseek-ocr` engine id, kept apart from
+  // OLLAMA_OCR_MODEL so both vision engines are selectable at once and can be
+  // compared on the same scan. Defaulted: nothing has to be set to try it.
+  OLLAMA_DEEPSEEK_OCR_MODEL: z.string().min(1).default('deepseek-ocr:latest'),
   OLLAMA_EMBEDDING_MODEL: z.string().min(1),
   // Only the HTTP server completes text; the batch CLI runs without it.
   OLLAMA_CHAT_MODEL: z.string().min(1).optional(),
@@ -95,6 +99,8 @@ export interface AppConfig {
   ollama: {
     baseUrl: URL;
     ocrModel: string;
+    /** Model for the `deepseek-ocr` engine id; needs its own prompt. */
+    deepseekOcrModel: string;
     embeddingModel: string;
     chatModel?: string;
     numContext: number;
@@ -195,6 +201,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     ollama: {
       baseUrl,
       ocrModel: env.OLLAMA_OCR_MODEL,
+      deepseekOcrModel: env.OLLAMA_DEEPSEEK_OCR_MODEL,
       embeddingModel: env.OLLAMA_EMBEDDING_MODEL,
       ...(env.OLLAMA_CHAT_MODEL ? { chatModel: env.OLLAMA_CHAT_MODEL } : {}),
       numContext: env.OLLAMA_NUM_CTX,

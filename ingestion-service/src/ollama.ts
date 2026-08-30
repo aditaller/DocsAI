@@ -51,6 +51,23 @@ const OCR_PROMPT =
   'Transcribe every piece of text in this page image. Begin the reply with one line ' +
   '"Language: <the language the document is written in>", then the transcription.';
 
+/**
+ * DeepSeek-OCR is trained on a small fixed set of prompts and does not follow
+ * freeform instructions. Given OCR_PROMPT it echoes the instruction back until
+ * it exhausts num_ctx: measured on a Hebrew form, 192s and 7671 tokens for zero
+ * transcribed words, against 5.4s and 98% word recall for the prompt below.
+ * `<image>` is the placeholder its template expects the page to land on.
+ *
+ * ponytail: matched on the model name rather than threaded down from the engine
+ * id, because the model is what the prompt actually belongs to — pulling a
+ * `deepseek-ocr:*` tag into OLLAMA_OCR_MODEL gets the right prompt either way.
+ */
+const DEEPSEEK_OCR_PROMPT = '<image>\nFree OCR.';
+
+export function ocrPromptFor(model: string): string {
+  return /^deepseek-ocr\b/i.test(model) ? DEEPSEEK_OCR_PROMPT : OCR_PROMPT;
+}
+
 /** Reads the `Language:` line the OCR prompt asks for. Null when the model skipped it. */
 export function detectLanguage(pageText: string): string | null {
   // `[ \t]` rather than `\s`, so a bare "Language:" cannot swallow the newline and
@@ -135,7 +152,7 @@ export class OllamaClient implements OcrEmbedder, ChatModel {
       // The `Language:` line is what tells the caller which script the document is
       // in — nothing downstream can tell Hebrew from Arabic once the text is
       // chunked. It costs one line of transcription and is indexed with the page.
-      prompt: OCR_PROMPT,
+      prompt: ocrPromptFor(this.options.ocrModel),
       images: [page.bytes.toString('base64')],
       stream: false,
       think: false,

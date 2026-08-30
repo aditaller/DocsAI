@@ -106,3 +106,59 @@ export class StatusPillComponent {
     return this.labels[this.status()];
   }
 }
+
+/* ---- Page references in an AI answer ----
+   Shared by the analysis result and the chat drawer: both turn `p. 3` into a link
+   that opens the original document — the PDF at that page, or the image. */
+
+/** `p.3`, `pp. 3-5`, `page 3`, `pages 3–5`, `עמוד 3`, `עמ' 3` — as the answer or the Sources line writes them. */
+export const PAGE_REF = /(?:\bpp?\.\s?|\bpages?\s+|עמ(?:ודים|וד|')\s*)(\d+)(?:\s*[-–]\s*(\d+))?/gi;
+
+/**
+ * Writing direction for a piece of text, by the same Hebrew block the ingestion
+ * service reads a page's script with.
+ *
+ * Used instead of `dir="auto"`, which decides on the first strong character in
+ * the element: an answer to a Hebrew question that opens with a claim number, an
+ * English term or a `<table>` whose first cell is a date would be laid out LTR.
+ * The question settles the direction for the whole exchange instead.
+ */
+export const directionOf = (text: string): 'rtl' | 'ltr' => (/[֐-׿]/.test(text) ? 'rtl' : 'ltr');
+
+/**
+ * Every page reference becomes an anchor. The href carries the range because
+ * Angular's sanitizer drops data- attributes and inline handlers from
+ * [innerHTML]; a delegated click reads it back with readPageClick().
+ */
+export function linkifyPages(text: string, docNames: string[], openableDocNames: string[] = []): string {
+  return text.replace(PAGE_REF, (match, from: string, _to: string | undefined, offset: number, whole: string) => {
+    // The nearest document name written before the reference owns it — that is
+    // how both the Sources line and a model naming a file read.
+    const before = whole.slice(0, offset);
+    let doc = 0;
+    let at = -1;
+    docNames.forEach((n, i) => {
+      const found = before.lastIndexOf(n);
+      if (found > at) {
+        at = found;
+        doc = i;
+      }
+    });
+    // A document that can't be fetched has nothing to open — leave the text plain
+    // rather than offering a link that only produces an error toast.
+    if (!openableDocNames.includes(docNames[doc])) return match;
+    return `<a class="page-ref" href="#pgopen=${doc}.${from}" title="Open the original at page ${from}">${match}</a>`;
+  });
+}
+
+export type PageClick = { docName: string; page: number } | null;
+
+/** Reads a click on linkified text back into the document + page it points at. */
+export function readPageClick(e: MouseEvent, docNames: string[]): PageClick {
+  const href = (e.target as HTMLElement).closest('a.page-ref')?.getAttribute('href') ?? '';
+  const m = /#pgopen=(\d+)\.(\d+)/.exec(href);
+  if (!m) return null;
+  e.preventDefault();
+  const docName = docNames[+m[1]];
+  return docName ? { docName, page: +m[2] } : null;
+}
