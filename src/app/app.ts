@@ -72,6 +72,7 @@ const HEBREW_INSTRUCTION =
           (objectIdChange)="objectId.set($event)"
           (processPicked)="onProcessPicked($event)"
           (toggle)="onToggleDoc($event)"
+          (selectAll)="onSelectAllDocs($event)"
           (filesPicked)="onFilesPicked($event)"
           (attach)="onAttach()"
           (preview)="onOpenDoc($event)"
@@ -305,6 +306,10 @@ export class App {
   // ---- Handlers ----
   onToggleDoc(id: string) {
     this.docs.update((ds) => ds.map((d) => (d.id === id ? { ...d, selected: !d.selected } : d)));
+  }
+
+  onSelectAllDocs(selected: boolean) {
+    this.docs.update((ds) => ds.map((d) => ({ ...d, selected })));
   }
 
   onFilesPicked(files: File[]) {

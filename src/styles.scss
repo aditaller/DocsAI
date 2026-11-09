@@ -159,7 +159,7 @@ di-status-pill { display: inline-flex; }
   background: var(--canvas);
   border-bottom: 1px solid var(--rule-strong);
 }
-.topbar .brand { display: flex; align-items: center; gap: 13px; }
+.topbar .brand { display: flex; align-items: center; gap: 8px; }
 /* the only logo asset is white-on-transparent; brightness(0) renders it as ink
    without needing a second file. Replace with a dark asset when one exists. */
 .topbar .brand img { height: 19px; width: auto; filter: brightness(0); opacity: 0.92; }
@@ -316,6 +316,9 @@ di-status-pill { display: inline-flex; }
 .list-toolbar {
   flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between;
+  /* Three controls share this row now, so they need a floor between them on a
+     narrow panel rather than relying on space-between alone. */
+  gap: 12px;
   padding: 11px 20px;
   border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule-strong);
@@ -341,6 +344,9 @@ di-status-pill { display: inline-flex; }
   transition: color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 .ghost-btn:hover { color: var(--ink); border-bottom-color: var(--ink); }
+/* Matches the mode switch: a control that cannot act must not look like it can. */
+.ghost-btn:disabled { cursor: not-allowed; opacity: 0.4; }
+.ghost-btn:disabled:hover { color: var(--ink-2); border-bottom-color: var(--rule-strong); }
 .ghost-btn.spin .di-icon { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -1067,6 +1073,40 @@ tr.row-processing td { background: none; animation: none; }
 .raw-ocr-text .field { color: var(--signal); }
 .raw-line { display: flex; gap: 14px; }
 .raw-line .ln { color: var(--ink-4); user-select: none; min-width: 26px; text-align: right; }
+
+/* chat drawer — the one drawer that is a movable, resizable panel, because it
+   is read against the document it is about. Sizing is native CSS `resize`, so
+   the handle sits in the input bar's bottom corner and needs no code; the
+   component only supplies left/top while it is being dragged. */
+.drawer.chat-panel {
+  bottom: auto;
+  height: 100vh;
+  /* `resize` is ignored unless the box clips, and the body scrolls on its own. */
+  overflow: hidden;
+  resize: both;
+  min-width: 340px;
+  min-height: 300px;
+  max-width: 96vw;
+  max-height: 100vh;
+}
+.drawer.chat-panel .drawer-head {
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+.drawer.chat-panel .drawer-close { cursor: pointer; }
+/* The slide-in transition would lag a drag by a frame and fight the pointer. */
+.drawer.chat-panel.dragging { transition: none; }
+/* Closing is a fade as well as the slide, because once the panel has been moved
+   translateX(100%) no longer parks it past the right edge — a panel dragged left
+   would sit half on screen with nothing to dismiss it. */
+.drawer.chat-panel {
+  transition:
+    transform var(--dur-slow) var(--ease-out),
+    opacity var(--dur-slow) var(--ease-out),
+    visibility var(--dur-slow) var(--ease-out);
+}
+.drawer.chat-panel:not(.open) { opacity: 0; visibility: hidden; }
 
 /* chat drawer */
 .chat-msgs { display: flex; flex-direction: column; gap: 16px; }

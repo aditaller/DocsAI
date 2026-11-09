@@ -1,7 +1,7 @@
 import { Component, computed, effect, ElementRef, input, output, signal, viewChild } from '@angular/core';
 import { RAW_OCR } from '../data/data';
 import { Job, RawOcr, THINKING_PREFIX, Toast } from '../models/models';
-import { directionOf, FileIconComponent, IconComponent, linkifyPages, readPageClick } from './shared';
+import { directionOf, FileIconComponent, IconComponent, linkifyPages, readPageClick, renderMarkdown } from './shared';
 
 @Component({
   selector: 'di-raw-ocr-drawer',
@@ -99,6 +99,14 @@ export class RawOcrDrawerComponent {
   }
 }
 
+/**
+ * One axis of a dragged panel, held inside the viewport. A panel wider or taller
+ * than the viewport is pinned at 0 rather than clamped to a negative range, so
+ * it can never be pushed out of reach in the axis it does not fit.
+ */
+const clampWithin = (v: number, size: number, viewport: number) =>
+  Math.min(Math.max(v, Math.min(0, viewport - size)), Math.max(0, viewport - size));
+
 interface ChatMsg {
   who: 'ai' | 'user';
   text: string;
@@ -112,8 +120,27 @@ interface ChatMsg {
   imports: [IconComponent],
   template: `
     <div class="drawer-scrim" data-testid="chat-drawer-scrim" [class.open]="open()" (click)="close.emit()"></div>
-    <div class="drawer" [class.open]="open()" role="dialog" aria-label="Document chat">
-      <div class="drawer-head">
+    <div
+      class="drawer chat-panel"
+      data-testid="chat-panel"
+      [class.open]="open()"
+      [class.dragging]="dragging()"
+      [style.left.px]="pos()?.x"
+      [style.top.px]="pos()?.y"
+      [style.right]="pos() ? 'auto' : null"
+      role="dialog"
+      aria-label="Document chat"
+    >
+      <div
+        class="drawer-head"
+        data-testid="chat-drag-handle"
+        title="Drag to move · double-click to snap back · drag the bottom corner to resize"
+        (pointerdown)="startDrag($event)"
+        (pointermove)="onDrag($event)"
+        (pointerup)="endDrag($event)"
+        (pointercancel)="endDrag($event)"
+        (dblclick)="pos.set(null)"
+      >
         <div class="z-icon" style="width:34px;height:34px"><di-icon name="chat" [size]="17" /></div>
         <div class="titles">
           <div class="t">Chat on Documents</div>
@@ -174,16 +201,21 @@ export class ChatDrawerComponent {
 
   /**
    * Rendered as real markup, so a model answering with a table or a list shows
-   * as one rather than as literal tags. Deliberately NOT escaped — but also not
-   * passed through bypassSecurityTrustHtml, so Angular's own sanitizer still runs
-   * on [innerHTML] and strips <script>, event handlers and javascript: URLs.
+   * as one rather than as literal tags — markdown included, which is what the
+   * chat model actually writes: see renderMarkdown. Deliberately NOT escaped —
+   * but also not passed through bypassSecurityTrustHtml, so Angular's own
+   * sanitizer still runs on [innerHTML] and strips <script>, event handlers and
+   * javascript: URLs.
    *
    * That boundary matters here: this text is a model's summary of OCR'd archive
    * documents, which are untrusted input. Sanitized HTML is the widest this may
    * ever get — anything that trusts the string directly reopens XSS through a
    * poisoned document.
    */
-  linked = (text: string) => linkifyPages(text, this.docNames(), this.openableDocNames());
+  // Page references are linked on the markdown, then the whole answer is
+  // rendered: an anchor passes through renderMarkdown untouched, while matching
+  // page numbers inside generated href/title attributes cannot happen.
+  linked = (text: string) => renderMarkdown(linkifyPages(text, this.docNames(), this.openableDocNames()));
 
   onBubbleClick(e: MouseEvent) {
     const hit = readPageClick(e, this.docNames());
@@ -194,6 +226,57 @@ export class ChatDrawerComponent {
   input = signal('');
   pending = signal(false);
   private body = viewChild<ElementRef<HTMLElement>>('body');
+
+  /* ---- Move and resize ----
+     The panel is read side by side with the document it is about, so it has to
+     get out of the way. Resizing is CSS `resize` on .chat-panel — no code at
+     all; only the move needs any, because nothing native drags an element.
+
+     Position survives closing and reopening: having placed the panel once, an
+     operator does not want it back over the document on the next question.
+     Double-clicking the header snaps it back to the right edge.
+
+     ponytail: inline left/top and the pointer events, no drag library and no
+     ghost element. */
+  pos = signal<{ x: number; y: number } | null>(null);
+  dragging = signal(false);
+  private grab: { dx: number; dy: number; w: number; h: number } | null = null;
+
+  startDrag(e: PointerEvent) {
+    // The close button lives in the header; a click on it is not a drag.
+    if ((e.target as HTMLElement).closest('button')) return;
+    const head = e.currentTarget as HTMLElement;
+    const panel = head.closest('.chat-panel') as HTMLElement | null;
+    if (!panel) return;
+    const r = panel.getBoundingClientRect();
+    // Measured rather than read from pos(): the first drag starts from the
+    // right-edge default, which has no left/top of its own yet.
+    this.grab = { dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height };
+    this.pos.set({ x: r.left, y: r.top });
+    this.dragging.set(true);
+    head.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  onDrag(e: PointerEvent) {
+    const g = this.grab;
+    if (!g) return;
+    // Clamped to keep the whole panel on screen, so the header stays grabbable
+    // and the input bar never lands past the bottom edge. An axis with no room
+    // left simply does not move: a full-height panel slides sideways until it
+    // is resized, which is also what the header's tooltip says.
+    this.pos.set({
+      x: clampWithin(e.clientX - g.dx, g.w, window.innerWidth),
+      y: clampWithin(e.clientY - g.dy, g.h, window.innerHeight),
+    });
+  }
+
+  endDrag(e: PointerEvent) {
+    if (!this.grab) return;
+    this.grab = null;
+    this.dragging.set(false);
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  }
 
   constructor() {
     effect(() => {

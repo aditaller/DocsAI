@@ -12,7 +12,7 @@ import { LocalHealth } from '../services/local-rag.service';
       <div class="brand">
        <di-icon name="layers" [size]="18" />
         <img src="assets/taldar-logo-white.png" alt="TALDAR" />
-        <span class="divider"></span>
+        -
         <span class="screen-title">Document Ingest</span>
       </div>
       <div class="crumbs">
