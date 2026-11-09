@@ -52,6 +52,18 @@ import { FileIconComponent, IconComponent } from './shared';
 
       <div class="list-toolbar">
         <span class="count"><b>{{ docs().length }}</b> documents · <b>{{ selectedCount() }}</b> selected</span>
+        <!-- One control rather than a Select all / Clear pair: with every document
+             already selected the only useful action left is to clear them. -->
+        <button
+          class="ghost-btn"
+          data-testid="select-all"
+          [disabled]="docs().length === 0"
+          [attr.aria-pressed]="allSelected()"
+          (click)="selectAll.emit(!allSelected())"
+        >
+          <di-icon [name]="allSelected() ? 'close' : 'check'" [size]="14" />
+          {{ allSelected() ? 'Clear' : 'Select all' }}
+        </button>
         <label class="ghost-btn" data-testid="load-from-server" style="cursor:pointer">
           <di-icon name="refresh" [size]="14" />
           Load from Server
@@ -156,11 +168,16 @@ export class LeftPanelComponent {
   objectIdChange = output<string>();
   processPicked = output<CustomerHit>();
   toggle = output<string>();
+  /** true selects every document, false clears them all. */
+  selectAll = output<boolean>();
   filesPicked = output<File[]>();
   attach = output<void>();
   preview = output<Doc>();
   open = output<Doc>();
   remove = output<string>();
+
+  /** False on an empty list, so the button never offers to clear nothing. */
+  allSelected = computed(() => this.docs().length > 0 && this.selectedCount() === this.docs().length);
 
   onFiles(list: FileList | null) {
     if (list && list.length) this.filesPicked.emit(Array.from(list));

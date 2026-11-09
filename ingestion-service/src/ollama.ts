@@ -363,3 +363,37 @@ export function normalizeOcr(value: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+// The instruction has to permit a partial answer. Asking a hospital bill for
+// "the FNOL and adjuster statement" used to end the turn — the model reported the
+// wording as absent and stopped, without mentioning the provider, payer, patient
+// and service dates that were sitting in the excerpt. Grounding is kept: it may
+// map the question onto what the document calls things, never invent.
+const RETRIEVAL_SYSTEM_SUFFIX =
+  '\n\nAnswer only from the document excerpts provided below. ' +
+  'Each excerpt is labelled with its document and page numbers. ' +
+  'Cite the page you used inline. ' +
+  'The document will rarely use the same wording as the question: answer with the equivalent information it does contain and say what you mapped onto what. ' +
+  'List whatever parts of the question the excerpts genuinely cannot answer, but only after giving everything they can. Never invent a value.';
+
+/**
+ * Appended when the question is written in Hebrew. Without it the model answers a
+ * Hebrew question in English: the excerpts it is reading are usually Hebrew, but
+ * the system prompt around them is English and that is what it mirrors.
+ *
+ * Stated explicitly rather than as "reply in the language of the question" —
+ * the same wording the analysis panel's HEB button already uses, because a
+ * general instruction leaves headings and table cells in English while only the
+ * prose turns over.
+ */
+const HEBREW_ANSWER_INSTRUCTION =
+  '\n\nThe question is written in Hebrew. Answer entirely in Hebrew: every sentence, heading, label, ' +
+  'field name, list item and table cell. Figures, dates and identifiers stay exactly as the document writes them. ' +
+  'If the answer is requested as HTML, the text inside that HTML must be Hebrew too.';
+
+/** The Hebrew block, the same range the ingest path reads a page's script with. */
+const HEBREW = /[֐-׿]/;
+
+/** System prompt for one question: the caller's prompt, the grounding rules, and language. */
+export function systemPromptFor(prompt: string): string {
+  return prompt + RETRIEVAL_SYSTEM_SUFFIX + (HEBREW.test(prompt) ? HEBREW_ANSWER_INSTRUCTION : '');
+}

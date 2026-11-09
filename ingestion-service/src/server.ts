@@ -5,7 +5,7 @@ import http from 'node:http';
 import { loadConfig } from './config.js';
 import { sanitizeError, ServiceError, type ErrorCode } from './errors.js';
 import { Logger } from './logger.js';
-import { averageConfidence, detectLanguage, OllamaClient, toPercent } from './ollama.js';
+import { averageConfidence, detectLanguage, OllamaClient, systemPromptFor, toPercent } from './ollama.js';
 import { IngestionPipeline } from './pipeline.js';
 import { PostgresRagStore, type ChunkHit } from './rag-store.js';
 import { ImagePageRenderer, PopplerPdfRenderer, SourceRenderer } from './renderer.js';
@@ -47,17 +47,6 @@ interface ChatContext {
   empty: string | null;
 }
 
-// The instruction has to permit a partial answer. Asking a hospital bill for
-// "the FNOL and adjuster statement" used to end the turn — the model reported the
-// wording as absent and stopped, without mentioning the provider, payer, patient
-// and service dates that were sitting in the excerpt. Grounding is kept: it may
-// map the question onto what the document calls things, never invent.
-const RETRIEVAL_SYSTEM_SUFFIX =
-  '\n\nAnswer only from the document excerpts provided below. ' +
-  'Each excerpt is labelled with its document and page numbers. ' +
-  'Cite the page you used inline. ' +
-  'The document will rarely use the same wording as the question: answer with the equivalent information it does contain and say what you mapped onto what. ' +
-  'List whatever parts of the question the excerpts genuinely cannot answer, but only after giving everything they can. Never invent a value.';
 
 /**
  * Loopback-only HTTP surface over the same pipeline the CLI drives.
@@ -340,7 +329,7 @@ async function main(): Promise<void> {
     }
 
     await sendEventStream(response, async (send) => {
-      await ollama.chat(prompt + RETRIEVAL_SYSTEM_SUFFIX, context, (token, thinking) =>
+      await ollama.chat(systemPromptFor(prompt), context, (token, thinking) =>
         send(thinking ? { thinking: token } : { token }),
       );
       send({

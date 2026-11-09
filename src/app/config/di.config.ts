@@ -24,7 +24,8 @@ export const DI_CONFIG = {
       { id: 'tesseract', label: 'Tesseract OCR', short: 'Tesseract', modelId: 'tesseract-v5' },
     ] as OcrEngine[],
     defaultId: 'azure',
-    endpoint: 'https://localhost:7185/api/TaldarAI/OCRFromBlob', // backend that runs the selected engine; override per deployment
+    //endpoint: 'https://localhost:7185/api/TaldarAI/OCRFromBlob', // backend that runs the selected engine; override per deployment
+    endpoint: 'https://localhost:8080/api/TaldarAI/OCRFromBlob', // Taldarai ON dOCKER
   },
   taldar: {
     // Generic metadata typeahead: ?tablename=&param=&getcol= → [{ id, name }]
@@ -103,7 +104,8 @@ export const DI_CONFIG = {
       { id: 'gpt', label: 'GPT-4o', version: 'gpt-4o' },
     ] as AiModel[],
     defaultId: 'taldar',
-    chatEndpoint: 'https://localhost:7185/api/gpt5mini/chat', // { userMessage, systemMessage, enableWebSearch } → chat reply
+    //chatEndpoint: 'https://localhost:7185/api/gpt5mini/chat', // { userMessage, systemMessage, enableWebSearch } → chat reply
+  chatEndpoint: 'https://localhost:8080/api/gpt5mini/chat', // tTaldarAi on Docker
   },
 };
 
