@@ -162,3 +162,152 @@ export function readPageClick(e: MouseEvent, docNames: string[]): PageClick {
   const docName = docNames[+m[1]];
   return docName ? { docName, page: +m[2] } : null;
 }
+
+/* ---- Markdown in an AI answer ----
+   The chat model answers in markdown, and when asked for a document it wraps
+   the whole answer in a ```markdown fence. Shown as-is that is a page of
+   source: headings as `##`, a table as pipes, the lot inside a code block. So
+   the answer is rendered into the elements the bubble is already styled for.
+
+   The result still goes to [innerHTML] without bypassSecurityTrustHtml, so
+   Angular's sanitizer stays the boundary against a poisoned document — see
+   ChatDrawerComponent.linked.
+
+   ponytail: a subset renderer, covering what the model actually emits —
+   headings, lists, GFM tables, code, emphasis, links, rules. Swap in `marked`
+   if answers start needing real CommonMark (reference links, nested lists,
+   setext headings, footnotes). */
+
+const escapeHtml = (s: string) =>
+  s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string);
+
+/**
+ * A whole answer inside one fence is the model quoting markdown, not showing
+ * code — `md`/`markdown` says so outright, and an untagged fence counts only
+ * when its content reads as markdown. Anything else stays a code block.
+ */
+function unwrapMarkdownFence(text: string): string {
+  const m = /^\s*`{3,}[ \t]*([\w+-]*)[ \t]*\r?\n([\s\S]*?)\r?\n?[ \t]*`{3,}\s*$/.exec(text);
+  if (!m) return text;
+  const [, lang, body] = m;
+  if (/^(md|markdown|mdown)$/i.test(lang)) return body;
+  return !lang && /^\s{0,3}(#{1,6}\s|[-*+]\s|\d+[.)]\s|\||>\s)/m.test(body) ? body : text;
+}
+
+/** Emphasis, strikethrough and links. Existing markup is left alone, by design. */
+function inlineMarkdown(s: string): string {
+  return s
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^\w*])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+export function renderMarkdown(text: string): string {
+  // Code comes out first and goes back in last, so nothing inside it is read as
+  // markdown and nothing in it is read as markup either.
+  const stash: string[] = [];
+  const hold = (html: string) => `\u0000${stash.push(html) - 1}\u0000`;
+  const src = unwrapMarkdownFence(text)
+    .replace(/`{3,}[ \t]*[\w+-]*[ \t]*\r?\n([\s\S]*?)`{3,}/g, (_m, body: string) =>
+      hold(`<pre><code>${escapeHtml(body.replace(/\s+$/, ''))}</code></pre>`),
+    )
+    .replace(/`([^`\n]+)`/g, (_m, body: string) => hold(`<code>${escapeHtml(body)}</code>`));
+
+  const lines = src.split(/\r?\n/);
+  const out: string[] = [];
+  let para: string[] = [];
+  let list: 'ul' | 'ol' | null = null;
+  const cells = (row: string) =>
+    row
+      .trim()
+      .replace(/^\||\|$/g, '')
+      .split('|')
+      .map((c) => inlineMarkdown(c.trim()));
+  // Soft line breaks are kept: the model lays out an answer with them, and
+  // collapsing them runs a list of findings into one block of prose.
+  const endPara = () => {
+    if (para.length) out.push(`<p>${inlineMarkdown(para.join('<br>'))}</p>`);
+    para = [];
+  };
+  const endList = () => {
+    if (list) out.push(`</${list}>`);
+    list = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // A fenced block stands on its own — never wrapped in the paragraph it interrupts.
+    const lone = /^\u0000(\d+)\u0000$/.exec(line.trim());
+    if (lone && stash[+lone[1]].startsWith('<pre')) {
+      endPara();
+      endList();
+      out.push(line.trim());
+      continue;
+    }
+
+    // GFM table: a pipe row followed by the |---|---| separator.
+    if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] ?? '')) {
+      endPara();
+      endList();
+      const head = cells(line);
+      const body: string[][] = [];
+      for (i += 2; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i++) body.push(cells(lines[i]));
+      i--;
+      out.push(
+        `<table><thead><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr></thead>` +
+          `<tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`,
+      );
+      continue;
+    }
+
+    const heading = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      endPara();
+      endList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${inlineMarkdown(heading[2].replace(/\s*#*\s*$/, ''))}</h${level}>`);
+      continue;
+    }
+
+    if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      endPara();
+      endList();
+      out.push('<hr>');
+      continue;
+    }
+
+    const quote = /^\s{0,3}>\s?(.*)$/.exec(line);
+    if (quote) {
+      endPara();
+      endList();
+      out.push(`<blockquote>${inlineMarkdown(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    const item = /^\s*([-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (item) {
+      endPara();
+      const kind = /^\d/.test(item[1]) ? 'ol' : 'ul';
+      if (list !== kind) {
+        endList();
+        out.push(`<${kind}>`);
+        list = kind;
+      }
+      out.push(`<li>${inlineMarkdown(item[2])}</li>`);
+      continue;
+    }
+
+    if (!line.trim()) {
+      endPara();
+      endList();
+      continue;
+    }
+    para.push(line.trim());
+  }
+  endPara();
+  endList();
+
+  return out.join('').replace(/\u0000(\d+)\u0000/g, (_m, i: string) => stash[+i]);
+}
